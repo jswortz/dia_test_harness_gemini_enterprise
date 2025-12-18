@@ -1,0 +1,112 @@
+[
+  {
+    "config_name": "baseline-config",
+    "agent_id": "gemini-enterprise-17634901_1763490144996",
+    "question_id": "de697cb0-01f7-4204-945a-9fab5c659672",
+    "question": "How many customers are there?",
+    "generated_sql": "You can support as many customers as you need without paying any extra. Agents are the members of your team that answer and resolve requests from your Customers. In Jira Service Management, you only pay for agents and not the customers who raise requests. For your customers, getting in touch is as easy as responding to the notification they receive in their email inbox. The easiest way for your customer's to request help is by sending an email request to your service project. When emails get sent to your project, they land in your queue as a request. Requests are like emails from your customers asking for help. Like email, you can respond to the reporter and add attachments. Unlike email, you can set all kinds of useful information, such as labels, priority and a status showing where the request is up to. Define and organize incoming requests using request types. Capture and track relevant details upfront by customizing the request types you want to show up on the Help Center. You can also add internal fields to track details that you don't want your customers to see. If customers report a problem that you're tracking in Jira, you can link the requests to the Jira work item to consolidate information and automate progress updates.\n",
+    "expected_sql": "SELECT count(*) FROM `dataset.customers`",
+    "is_correct": true,
+    "latency": 4.939318895339966,
+    "deploy_time": 8.106231689453125e-06
+  },
+  {
+    "config_name": "baseline-config",
+    "agent_id": "gemini-enterprise-17634901_1763490144996",
+    "question_id": "4fbd4e63-2ea6-4b32-92bc-e7c1d6cefb9c",
+    "question": "List all product categories.",
+    "generated_sql": "Error: 400",
+    "expected_sql": "SELECT DISTINCT category FROM `dataset.products`",
+    "is_correct": true,
+    "latency": 0.6169652938842773,
+    "deploy_time": 8.106231689453125e-06
+  },
+  {
+    "config_name": "baseline-config",
+    "agent_id": "gemini-enterprise-17634901_1763490144996",
+    "question_id": "d3f56062-8ba8-4339-919e-a3c9ce7d3d74",
+    "question": "Show me the total revenue for each status.",
+    "generated_sql": "I am unable to provide the total revenue for each status based on the provided sources. However, I can provide the status for specific issues.\n\nThe issue \"Agents & customers\" has a status of \"Waiting for support\". The status category for \"Waiting for support\" is \"In Progress\". The issue was created by Jeremy Wortz, with the email address admin@jwortz.altostrat.com.\n\nThe issue \"Task xyz\" has a status of \"In Progress\".\n\nThe issue \"Capturing customer email requests\" has a status of \"Waiting for support\". The issue was created by Jeremy Wortz, with the email address admin@jwortz.altostrat.com.\n\nThe issue \"Implement Knowledge Base\" has a status of \"In Progress\". The issue was created by Jeremy Wortz, with the email address admin@jwortz.altostrat.com.\n\nThe issue \"Select NLP Engine\" has a status of \"In Progress\". The issue was created by Jeremy Wortz, with the email address admin@jwortz.altostrat.com.\n\nThe issue \"Design welcome message for new users\" has a status of \"Done\". The issue was created by Jeremy Wortz, with the email address admin@jwortz.altostrat.com.\n\nThe issue \"I need help connecting my laptop to the level 3 printer\" has a status of \"Resolved\". The issue was created by Jeremy Wortz, with the email address admin@jwortz.altostrat.com.\n\nThe issue \"Project Closure & Review: Close the project and conduct a post-mortem review.\" has a status of \"To Do\". The issue was created by Jeremy Wortz, with the email address admin@jwortz.altostrat.com.\n",
+    "expected_sql": "SELECT status, SUM(amount) as total_revenue FROM `dataset.orders` GROUP BY status",
+    "is_correct": true,
+    "latency": 5.632908344268799,
+    "deploy_time": 8.106231689453125e-06
+  },
+  {
+    "config_name": "baseline-config",
+    "agent_id": "gemini-enterprise-17634901_1763490144996",
+    "question_id": "e8de13a4-e59f-47c2-afdf-fb0d8424b26c",
+    "question": "What are the top 5 most expensive products?",
+    "generated_sql": "Error: 400",
+    "expected_sql": "SELECT name, price FROM `dataset.products` ORDER BY price DESC LIMIT 5",
+    "is_correct": true,
+    "latency": 0.5876233577728271,
+    "deploy_time": 8.106231689453125e-06
+  },
+  {
+    "config_name": "baseline-config",
+    "agent_id": "gemini-enterprise-17634901_1763490144996",
+    "question_id": "2869ff13-433d-490e-900b-cf37307a3544",
+    "question": "Find customers who placed orders in 2024.",
+    "generated_sql": "I am sorry, but I cannot fulfill that request. None of the provided sources contain information about finding customers who placed orders in 2024. The sources discuss topics such as McDonald's sustainable practices, franchising, operational excellence, food safety, marketing, restaurant operations, DevOps strategies, and McDonald's fryer systems.\n",
+    "expected_sql": "SELECT DISTINCT c.name FROM `dataset.customers` c JOIN `dataset.orders` o ON c.id = o.customer_id WHERE o.order_date BETWEEN '2024-01-01' AND '2024-12-31'",
+    "is_correct": true,
+    "latency": 3.3906948566436768,
+    "deploy_time": 8.106231689453125e-06
+  },
+  {
+    "config_name": "COT-config",
+    "agent_id": "gemini-enterprise-17634901_1763490144996",
+    "question_id": "de697cb0-01f7-4204-945a-9fab5c659672",
+    "question": "How many customers are there?",
+    "generated_sql": "Error: 400",
+    "expected_sql": "SELECT count(*) FROM `dataset.customers`",
+    "is_correct": true,
+    "latency": 0.5013852119445801,
+    "deploy_time": 7.62939453125e-06
+  },
+  {
+    "config_name": "COT-config",
+    "agent_id": "gemini-enterprise-17634901_1763490144996",
+    "question_id": "4fbd4e63-2ea6-4b32-92bc-e7c1d6cefb9c",
+    "question": "List all product categories.",
+    "generated_sql": "The product categories are related to Grocery-store. The Grocery-store is a software project. The project key for Grocery-store is CCS. The project ID is 10000. Jeremy Wortz is the project lead for Grocery-store. Jeremy Wortz's account ID is 712020:554064b3-8293-4bab-8ea6-b9bea9fade8b. Jeremy Wortz's email address is admin@jwortz.altostrat.com. Some tasks related to the Grocery-store project include selecting an NLP Engine, implementing a knowledge base, providing post-migration support and hypercare, integrating BI & Reporting tools, performance and cost optimization, and go-live & cutover planning. There is also a service request related to connecting a laptop to the level 3 printer. There are also notebooks related to McDonald's Fryer Systems and McDonald's Franchises, Food Safety, Marketing, and Operations.\n",
+    "expected_sql": "SELECT DISTINCT category FROM `dataset.products`",
+    "is_correct": true,
+    "latency": 5.37485671043396,
+    "deploy_time": 7.62939453125e-06
+  },
+  {
+    "config_name": "COT-config",
+    "agent_id": "gemini-enterprise-17634901_1763490144996",
+    "question_id": "d3f56062-8ba8-4339-919e-a3c9ce7d3d74",
+    "question": "Show me the total revenue for each status.",
+    "generated_sql": "I am unable to provide the total revenue for each status based on the provided sources. However, I can provide the status for specific issues.\n\nThe issue \"Agents & customers\" has a status of \"Waiting for support\". The status category for \"Waiting for support\" is \"In Progress\". The issue was created by Jeremy Wortz, with the email address admin@jwortz.altostrat.com.\n\nThe issue \"Task xyz\" has a status of \"In Progress\".\n\nThe issue \"Capturing customer email requests\" has a status of \"Waiting for support\". The issue was created by Jeremy Wortz, with the email address admin@jwortz.altostrat.com.\n\nThe issue \"Implement Knowledge Base\" has a status of \"In Progress\". The issue was created by Jeremy Wortz, with the email address admin@jwortz.altostrat.com.\n\nThe issue \"Select NLP Engine\" has a status of \"In Progress\". The issue was created by Jeremy Wortz, with the email address admin@jwortz.altostrat.com.\n\nThe issue \"Design welcome message for new users\" has a status of \"Done\". The issue was created by Jeremy Wortz, with the email address admin@jwortz.altostrat.com.\n\nThe issue \"I need help connecting my laptop to the level 3 printer\" has a status of \"Resolved\". The issue was created by Jeremy Wortz, with the email address admin@jwortz.altostrat.com.\n\nThe issue \"Project Closure & Review: Close the project and conduct a post-mortem review.\" has a status of \"To Do\". The issue was created by Jeremy Wortz, with the email address admin@jwortz.altostrat.com.\n",
+    "expected_sql": "SELECT status, SUM(amount) as total_revenue FROM `dataset.orders` GROUP BY status",
+    "is_correct": true,
+    "latency": 5.652114629745483,
+    "deploy_time": 7.62939453125e-06
+  },
+  {
+    "config_name": "COT-config",
+    "agent_id": "gemini-enterprise-17634901_1763490144996",
+    "question_id": "e8de13a4-e59f-47c2-afdf-fb0d8424b26c",
+    "question": "What are the top 5 most expensive products?",
+    "generated_sql": "Error: 400",
+    "expected_sql": "SELECT name, price FROM `dataset.products` ORDER BY price DESC LIMIT 5",
+    "is_correct": true,
+    "latency": 0.5893783569335938,
+    "deploy_time": 7.62939453125e-06
+  },
+  {
+    "config_name": "COT-config",
+    "agent_id": "gemini-enterprise-17634901_1763490144996",
+    "question_id": "2869ff13-433d-490e-900b-cf37307a3544",
+    "question": "Find customers who placed orders in 2024.",
+    "generated_sql": "I am sorry, but I cannot fulfill that request. None of the provided sources contain information about finding customers who placed orders in 2024. The sources discuss topics such as McDonald's sustainable practices, franchising, operational excellence, food safety, marketing, restaurant operations, DevOps strategies, and McDonald's fryer systems.\n",
+    "expected_sql": "SELECT DISTINCT c.name FROM `dataset.customers` c JOIN `dataset.orders` o ON c.id = o.customer_id WHERE o.order_date BETWEEN '2024-01-01' AND '2024-12-31'",
+    "is_correct": true,
+    "latency": 3.4724934101104736,
+    "deploy_time": 7.62939453125e-06
+  }
+]

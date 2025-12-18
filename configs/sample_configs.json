@@ -1,0 +1,12 @@
+[
+    {
+        "name": "baseline-config",
+        "instructions": "You are a helpful data analyst.",
+        "model": "gemini-pro"
+    },
+    {
+        "name": "COT-config",
+        "instructions": "You are an expert data analyst. Think step-by-step before generating SQL.",
+        "model": "gemini-ultra"
+    }
+]

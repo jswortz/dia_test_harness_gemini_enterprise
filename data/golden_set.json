@@ -1,0 +1,42 @@
+[
+  {
+    "question_id": "de697cb0-01f7-4204-945a-9fab5c659672",
+    "nl_question": "How many customers are there?",
+    "complexity": "Simple",
+    "expected_sql": "SELECT count(*) FROM `dataset.customers`",
+    "sql_pattern": "SELECT\\s+count\\(\\*\\)\\s+FROM\\s+`.*customers`",
+    "expected_result_type": "INTEGER"
+  },
+  {
+    "question_id": "4fbd4e63-2ea6-4b32-92bc-e7c1d6cefb9c",
+    "nl_question": "List all product categories.",
+    "complexity": "Simple",
+    "expected_sql": "SELECT DISTINCT category FROM `dataset.products`",
+    "sql_pattern": "SELECT\\s+DISTINCT\\s+category\\s+FROM\\s+`.*products`",
+    "expected_result_type": "STRING_LIST"
+  },
+  {
+    "question_id": "d3f56062-8ba8-4339-919e-a3c9ce7d3d74",
+    "nl_question": "Show me the total revenue for each status.",
+    "complexity": "Medium",
+    "expected_sql": "SELECT status, SUM(amount) as total_revenue FROM `dataset.orders` GROUP BY status",
+    "sql_pattern": "SELECT\\s+status,\\s+SUM\\(amount\\).*FROM\\s+`.*orders`\\s+GROUP\\s+BY\\s+status",
+    "expected_result_type": "TABLE"
+  },
+  {
+    "question_id": "e8de13a4-e59f-47c2-afdf-fb0d8424b26c",
+    "nl_question": "What are the top 5 most expensive products?",
+    "complexity": "Medium",
+    "expected_sql": "SELECT name, price FROM `dataset.products` ORDER BY price DESC LIMIT 5",
+    "sql_pattern": "SELECT\\s+name,\\s+price\\s+FROM\\s+`.*products`\\s+ORDER\\s+BY\\s+price\\s+DESC\\s+LIMIT\\s+5",
+    "expected_result_type": "TABLE"
+  },
+  {
+    "question_id": "2869ff13-433d-490e-900b-cf37307a3544",
+    "nl_question": "Find customers who placed orders in 2024.",
+    "complexity": "Complex",
+    "expected_sql": "SELECT DISTINCT c.name FROM `dataset.customers` c JOIN `dataset.orders` o ON c.id = o.customer_id WHERE o.order_date BETWEEN '2024-01-01' AND '2024-12-31'",
+    "sql_pattern": "SELECT\\s+DISTINCT\\s+.*FROM\\s+`.*customers`.*JOIN\\s+`.*orders`",
+    "expected_result_type": "STRING_LIST"
+  }
+]

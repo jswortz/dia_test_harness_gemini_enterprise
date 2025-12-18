@@ -1,0 +1,27 @@
+[
+    {
+        "name": "baseline",
+        "description": "Standard baseline configuration",
+        "parameters": {},
+        "data_store_ids": ["dummy-ds-1766018108"]
+    },
+    {
+        "name": "few_shot_context",
+        "description": "Augmented with few-shot examples",
+        "parameters": {
+            "examples": [
+                "Question: Count total orders\nAnswer: SELECT count(*) FROM orders",
+                "Question: List products in Electronics\nAnswer: SELECT * FROM products WHERE category = 'Electronics'"
+            ]
+        },
+        "data_store_ids": ["dummy-ds-1766018108"]
+    },
+    {
+        "name": "verbose_schema",
+        "description": "Augmented with verbose schema description",
+        "parameters": {
+            "schema_context": "Table: orders (id, customer_id, amount, status, order_date). Table: products (id, name, category, price). Table: customers (id, name, email)."
+        },
+        "data_store_ids": ["dummy-ds-1766018108"]
+    }
+]

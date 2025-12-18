@@ -48,7 +48,7 @@ class TestEngine:
         try:
             logger.info(f"[{config_name}] Deploying agent...")
             start_deploy = time.time()
-            agent_id = self.client.create_agent(config)
+            agent_id = self.client.create_agent(config_name, config)
             deploy_time = time.time() - start_deploy
             logger.info(f"[{config_name}] Deployed agent {agent_id} in {deploy_time:.2f}s")
             
@@ -65,7 +65,22 @@ class TestEngine:
                 # Mock evaluation (Replace w/ robust SQL/Data comparison logic)
                 # For now, we just pass if we got SQL back.
                 generated_sql = response.get("sql", "")
-                is_correct = len(generated_sql) > 0 # Super simple check
+                
+                # Validation Logic
+                # 1. Must be non-empty
+                # 2. Must look like SQL (start with SELECT, WITH, or common keywords)
+                # 3. Ideally should match expected_sql (normalized)
+                
+                clean_sql = generated_sql.strip().upper()
+                looks_like_sql = clean_sql.startswith("SELECT") or clean_sql.startswith("WITH")
+                
+                # Check against expected if provided
+                expected = case.get("expected_sql", "").strip().upper()
+                
+                # For now, PASS only if it looks like SQL. 
+                # Later strict mode: clean_sql == expected
+                is_correct = len(clean_sql) > 0 and looks_like_sql
+
                 
                 results.append({
                     "config_name": config_name,

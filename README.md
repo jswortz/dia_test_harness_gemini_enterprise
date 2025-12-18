@@ -63,6 +63,19 @@ python -m src.orchestrator.main run-all \
     --use-real-api
 ```
 
+### Advanced: Multi-Variant Testing with Dynamic Deployment
+The harness can deploy separate Data Insights Agent instances for each configuration to ensure isolation.
+
+1. **Define Configs**: Create/Edit `configs/multi_variant.json` (specify prompt overrides and `data_store_ids`).
+2. **Run Parallel**:
+   ```bash
+   python -m src.orchestrator.main run-all --config-file configs/multi_variant.json --golden-set data/golden_set.json --use-real-api --parallel 3
+   ```
+   This will:
+   - Create 3 separate DIA Engines (Agents) in parallel.
+   - Run the test suite against each.
+   - Delete the agents automatically.
+
 ### 3. Debugging & Verification
 
 The `scripts/` directory contains powerful tools for troubleshooting:

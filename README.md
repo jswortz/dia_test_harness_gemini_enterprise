@@ -2,6 +2,8 @@
 
 A comprehensive test harness for deploying, verifying, and benchmarking Google Cloud Data Insights Agents (DIA) in parallel. This tool allows you to validate agent configurations, test data routing, and measure performance using golden datasets.
 
+![Parallel Deployment Diagram](parallel_deployment.png)
+
 ## Features
 
 - **Multi-Variant Deployment**: Deploys 5 distinct agent configurations in parallel (Baseline, Few-Shot, Verbose Schema, Persona, Chain-of-Thought).
@@ -16,6 +18,8 @@ A comprehensive test harness for deploying, verifying, and benchmarking Google C
 - `uv` (recommended build tool) or `pip`
 - Google Cloud Project with Discovery Engine API enabled
 - `gcloud` CLI authenticated
+- **OAuth Resource**: You must create an OAuth client and secret for the agent to access BigQuery.
+  - Follow the guide to [Create Authorization Resource](https://docs.cloud.google.com/gemini/enterprise/docs/data-agent#auth-details).
 
 ## Installation
 
@@ -33,7 +37,11 @@ A comprehensive test harness for deploying, verifying, and benchmarking Google C
    ```
 
 3. **Configure Environment Variables**:
-   Create a `.env` file in the root directory:
+   Copy the example environment file:
+   ```bash
+   cp .env.example .env
+   ```
+   Edit `.env` with your project details:
    ```env
    GOOGLE_CLOUD_PROJECT=your-project-id
    DIA_LOCATION=global
@@ -42,6 +50,7 @@ A comprehensive test harness for deploying, verifying, and benchmarking Google C
    OAUTH_CLIENT_ID=your-oauth-client-id
    OAUTH_SECRET=your-oauth-client-secret
    ```
+   > **Note**: For all available configuration options, refer to the [Data Agent Documentation](https://docs.cloud.google.com/gemini/enterprise/docs/data-agent).
 
 ## Usage
 

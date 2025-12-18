@@ -4,13 +4,11 @@ A comprehensive test harness for deploying, verifying, and benchmarking Google C
 
 ## Features
 
-- **End-to-End Orchestration**: Manages the full lifecycle of agent testing (Setup -> Test -> Teardown).
-- **Dual Modes**: 
-  - **Mock Mode**: For local logic verification without API costs.
-  - **Real API Mode**: Connects to live Gemini Enterprise (Discovery Engine) agents.
+- **Multi-Variant Deployment**: Deploys 5 distinct agent configurations in parallel (Baseline, Few-Shot, Verbose Schema, Persona, Chain-of-Thought).
+- **Dynamic Authorization**: Automatically creates and links Authorization Resources with specific OAuth scopes and BigQuery access.
+- **Robust Configuration**: Uses "Delete-and-Recreate" strategy to ensure clean state and correct authorization for every deployment.
 - **Data Generation**: Scripts to generate synthetic E-commerce datasets (Customers, Products, Orders) and Golden Test Sets.
-- **Robust Verification**: Includes specialized scripts to troubleshoot `ENGINE_HAS_NO_DATA_STORES`, `404` routing errors, and API connectivity.
-- **Reporting**: automatic results capture in `results.json` with latency and correctness metrics.
+- **Reporting**: Automatic results capture in `results.json` (currently pending API connectivity for automated probing).
 
 ## Prerequisites
 
@@ -40,8 +38,9 @@ A comprehensive test harness for deploying, verifying, and benchmarking Google C
    GOOGLE_CLOUD_PROJECT=your-project-id
    DIA_LOCATION=global
    DIA_ENGINE_ID=your-engine-id
-   DIA_AGENT_ID=your-agent-id  # Optional, usually Engine ID is sufficient
    BQ_DATASET_ID=dia_test_dataset
+   OAUTH_CLIENT_ID=your-oauth-client-id
+   OAUTH_SECRET=your-oauth-client-secret
    ```
 
 ## Usage
@@ -53,59 +52,56 @@ Load synthetic data into your BigQuery dataset:
 python scripts/load_to_bq.py
 ```
 
-### 2. Run Test Suite (End-to-End)
+### 2. Deploy Agents (Multi-Variant)
 
-Run the full harness using the real DIA API:
+The harness is configured to deploy 5 parallel agent variants defined in `configs/multi_variant.json`.
+
+**Variants:**
+1.  `baseline`: Standard prompt.
+2.  `few_shot_context`: Included Q&A examples.
+3.  `verbose_schema`: Detailed schema description.
+4.  `persona_business`: BI Analyst persona.
+5.  `cot_reasoning`: Chain-of-Thought instructions.
+
+**Run Deployment:**
 ```bash
-python -m src.orchestrator.main run-all \
-    --config-file configs/sample_configs.json \
-    --golden-set data/golden_set.json \
-    --use-real-api
+python scripts/deploy_data_agent.py
 ```
+> **Note**: This script will automatically **delete** any existing agents with the same display names (`Data Agent - <variant>`) before creating new ones. This ensures the latest Authorization keys and configurations are applied.
 
-### Advanced: Multi-Variant Testing with Dynamic Deployment
-The harness can deploy separate Data Insights Agent instances for each configuration to ensure isolation.
+### 3. Verification (Manual)
 
-1. **Define Configs**: Create/Edit `configs/multi_variant.json` (specify prompt overrides and `data_store_ids`).
-2. **Run Parallel**:
-   ```bash
-   python -m src.orchestrator.main run-all --config-file configs/multi_variant.json --golden-set data/golden_set.json --use-real-api --parallel 3
-   ```
-   This will:
-   - Create 3 separate DIA Engines (Agents) in parallel.
-   - Run the test suite against each.
-   - Delete the agents automatically.
+> [!WARNING]
+> **Automated Probing Unavailable**: Due to current `v1alpha` API limitations, the test harness cannot programmatically probe the authenticated agents.
 
-### 3. Debugging & Verification
-
-The `scripts/` directory contains powerful tools for troubleshooting:
-
-- **Connectivity**:
-  - `scripts/debug_simple_answer.py`: Tests the working `v1beta` `:answer` endpoint.
-  - `scripts/probe_agent_endpoints_v1beta.py`: Exhaustively probes all Agent/Assistant endpoints.
-- **Configuration**:
-  - `scripts/inspect_engine.py`: Dumps Engine configuration and attached Data Stores.
-  - `scripts/create_dummy_datastore.py`: Creates and links a dummy data store to resolve generic "No Data Store" errors.
-  - `scripts/inspect_serving_config.py`: Checks the default search serving config.
+**Manual Verification Steps:**
+1.  Go to the [Google Cloud Console > Agent Builder](https://console.cloud.google.com/gen-app-builder/engines).
+2.  Select your Engine (`DIA_ENGINE_ID`).
+3.  Navigate to **Agents**.
+4.  You will see 5 agents corresponding to the deployed variants.
+5.  Test each agent manually in the Console's "Preview" pane to verify it can query BigQuery and answer questions according to its specific persona/configuration.
 
 ## Project Structure
 
 ```
 .
 ├── configs/                 # Agent configuration JSONs
+│   ├── multi_variant.json   # Main 5-variant config
+│   └── sample_configs.json
 ├── data/                    # Generated data and golden sets
-├── scripts/                 # Utility and Debug scripts
+├── scripts/                 # Utility and Deployment scripts
+│   ├── check_env.py
+│   ├── check_lro.py         # Monitor Liquid Operations
 │   ├── create_dummy_datastore.py
-│   ├── debug_*.py           # Focused API probes
-│   ├── deploy_data_agent.py
+│   ├── deploy_data_agent.py # Main deployment script
 │   ├── generate_data.py
+│   ├── generate_golden_set.py
+│   ├── inspect_*.py         # Configuration inspection tools
 │   ├── load_to_bq.py
-│   └── ...
+│   ├── probe_data_agent.py  # Automated probing (pending API fix)
+│   └── verify_connectivity.py
 ├── src/
 │   └── orchestrator/        # Core harness logic
-│       ├── agent_client.py  # Abstract, Mock, and Real Agent clients
-│       ├── engine.py        # Test execution engine
-│       └── main.py          # CLI entrypoint
 ├── results.json             # Test run outputs
 ├── pyproject.toml           # Project dependencies
 └── README.md
@@ -113,5 +109,5 @@ The `scripts/` directory contains powerful tools for troubleshooting:
 
 ## Known Issues
 
-- **Search Dominance**: The implicit routing sometimes favors Search over Data Agent SQL generation for generic queries.
-- **API Constraints**: `v1beta` `conversations` endpoints may return `400` if the engine has multiple data stores incompatible with certain query specs. The harness currently bypasses this using the `:answer` endpoint.
+- **API Connectivity**: Automated testing via `probe_data_agent.py` is currently blocked by API authentication limitations for `v1alpha` agents.
+- **Search Dominance**: Implicit routing may favor Search over SQL generation for generic queries.

@@ -2,13 +2,15 @@
     {
         "name": "baseline",
         "description": "Standard baseline configuration",
-        "parameters": {},
+        "nl2sql_prompt": "You are a specialized Data Scientist agent. Your job is to query the BigQuery database to answer user questions.",
+        "params": {},
         "data_store_ids": ["dummy-ds-1766018108"]
     },
     {
         "name": "few_shot_context",
         "description": "Augmented with few-shot examples",
-        "parameters": {
+        "nl2sql_prompt": "You are a specialized Data Scientist agent. Your job is to query the BigQuery database to answer user questions.\nHere are some examples of similar queries:",
+        "params": {
             "examples": [
                 "Question: Count total orders\nAnswer: SELECT count(*) FROM orders",
                 "Question: List products in Electronics\nAnswer: SELECT * FROM products WHERE category = 'Electronics'"
@@ -19,9 +21,24 @@
     {
         "name": "verbose_schema",
         "description": "Augmented with verbose schema description",
-        "parameters": {
+        "nl2sql_prompt": "You are a specialized Data Scientist agent. Your job is to query the BigQuery database to answer user questions. Use the detailed schema information provided to construct accurate queries.",
+        "params": {
             "schema_context": "Table: orders (id, customer_id, amount, status, order_date). Table: products (id, name, category, price). Table: customers (id, name, email)."
         },
+        "data_store_ids": ["dummy-ds-1766018108"]
+    },
+    {
+        "name": "persona_business",
+        "description": "Business Intelligence Expert Persona",
+        "nl2sql_prompt": "You are a Senior Business Intelligence Analyst. Your goal is to provide actionable insights. When querying data, focus on metrics that matter to the business, like revenue, growth, and customer retention. Ensure your SQL is optimized and your explanations are business-friendly.",
+        "params": {},
+        "data_store_ids": ["dummy-ds-1766018108"]
+    },
+    {
+        "name": "cot_reasoning",
+        "description": "Chain-of-Thought Reasoning",
+        "nl2sql_prompt": "You are a Data Scientist. Before generating any SQL, you must first think step-by-step about the user's request. 1. Identify the core question. 2. Identify the tables needed. 3. Determine the necessary joins and filters. 4. Write the SQL. Explicitly output your reasoning steps before the SQL query.",
+        "params": {},
         "data_store_ids": ["dummy-ds-1766018108"]
     }
 ]

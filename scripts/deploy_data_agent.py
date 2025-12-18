@@ -4,6 +4,8 @@ import google.auth
 import google.auth.transport.requests
 from dotenv import load_dotenv
 import time
+import json
+import uuid
 
 load_dotenv()
 
@@ -17,7 +19,63 @@ def get_auth_headers(project_id):
         "X-Goog-User-Project": project_id
     }
 
-def deploy_agent():
+def create_authorization(project_id, location, headers, host):
+    client_id = os.getenv("OAUTH_CLIENT_ID")
+    client_secret = os.getenv("OAUTH_SECRET")
+    
+    if not client_id or not client_secret:
+        print("Skipping Authorization: OAUTH_CLIENT_ID or OAUTH_SECRET not set.")
+        return None
+
+    auth_id = f"auth-{uuid.uuid4()}"
+    # auth_uri must include specific params for BigQuery access and Vertex AI Search redirect
+    auth_uri = (
+        "https://accounts.google.com/o/oauth2/v2/auth"
+        f"?client_id={client_id}"
+        "&redirect_uri=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fstatic%2Foauth%2Foauth.html"
+        "&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fbigquery"
+        "&include_granted_scopes=true"
+        "&response_type=code"
+        "&access_type=offline"
+        "&prompt=consent"
+    )
+    token_uri = "https://oauth2.googleapis.com/token"
+
+    parent = f"projects/{project_id}/locations/{location}"
+    url = f"https://{host}/v1alpha/{parent}/authorizations?authorizationId={auth_id}"
+    
+    payload = {
+        "name": f"{parent}/authorizations/{auth_id}",
+        "serverSideOauth2": {
+            "clientId": client_id,
+            "clientSecret": client_secret,
+            "authorizationUri": auth_uri,
+            "tokenUri": token_uri
+        }
+    }
+    
+    print(f"Creating Authorization resource: {auth_id}")
+    resp = requests.post(url, headers=headers, json=payload)
+    if resp.status_code == 200:
+        auth_name = resp.json()["name"]
+        print(f"Authorization created: {auth_name}")
+        return auth_name
+    else:
+        print(f"Failed to create authorization: {resp.status_code} - {resp.text}")
+        return None
+
+def delete_agent(agent_name, headers):
+    url = f"https://discoveryengine.googleapis.com/v1alpha/{agent_name}"
+    print(f"Deleting agent: {agent_name}...")
+    resp = requests.delete(url, headers=headers)
+    if resp.status_code == 200:
+        print("Agent deleted successfully.")
+        # Wait a bit for deletion to propagate
+        time.sleep(5)
+    else:
+        print(f"Failed to delete agent: {resp.status_code} - {resp.text}")
+
+def deploy_agents_from_config():
     project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
     location = os.getenv("DIA_LOCATION", "global").lower()
     engine_id = os.getenv("DIA_ENGINE_ID")
@@ -31,7 +89,7 @@ def deploy_agent():
         print(f"  BQ_DATASET_ID: {bq_dataset_id}")
         return
 
-    print(f"Deploying Agent to Project: {project_id}, Location: {location}, Engine: {engine_id}")
+    print(f"Deploying Agents to Project: {project_id}, Location: {location}, Engine: {engine_id}")
     
     headers = get_auth_headers(project_id)
     
@@ -42,62 +100,98 @@ def deploy_agent():
 
     base_url = f"https://{host}/v1alpha/projects/{project_id}/locations/{location}/collections/default_collection/engines/{engine_id}/assistants/default_assistant"
     
-    # 1. List Agents
-    agents_url = f"{base_url}/agents"
-    print(f"Listing agents at: {agents_url}")
-    resp = requests.get(agents_url, headers=headers)
-    if resp.status_code != 200:
-        print(f"Failed to list agents: {resp.text}")
-        return
+    # Load configs
+    with open("configs/multi_variant.json", "r") as f:
+        agent_configs = json.load(f)
 
-    agents = resp.json().get("agents", [])
-    target_agent_display_name = "Automated Data Agent"
-    existing_agent = None
-    
-    for a in agents:
-        if a.get("displayName") == target_agent_display_name:
-            existing_agent = a
-            break
-            
-    if existing_agent:
-        print(f"Agent '{target_agent_display_name}' already exists.")
-        print(f"Agent ID: {existing_agent['name'].split('/')[-1]}")
-        print(f"Full Name: {existing_agent['name']}")
-        return existing_agent['name'].split('/')[-1]
-    
-    # 2. Create Agent
-    print(f"Creating agent '{target_agent_display_name}'...")
-    
-    payload = {
-        "displayName": target_agent_display_name,
-        "description": "Automated Data Agent for BigQuery analysis",
-        "managed_agent_definition": {
-            "tool_settings": {
-                "tool_description": "Use this agent to query BigQuery data about customers and orders."
-            },
-            "data_science_agent_config": {
-                "bq_project_id": project_id,
-                "bq_dataset_id": bq_dataset_id,
-                "nl_query_config": {
-                    "nl2sql_prompt": "You are a specialized Data Scientist agent. Your job is to query the BigQuery database to answer user questions."
-                }
+    for config in agent_configs:
+        config_name = config["name"]
+        print(f"\nProcessing variant: {config_name}")
+        
+        # Construct Display Name
+        target_agent_display_name = f"Data Agent - {config_name}"
+        
+        # 1. List Agents to check existence
+        agents_url = f"{base_url}/agents"
+        resp = requests.get(agents_url, headers=headers)
+        if resp.status_code != 200:
+            print(f"Failed to list agents: {resp.text}")
+            continue
+
+        agents = resp.json().get("agents", [])
+        existing_agent = None
+        
+        for a in agents:
+            if a.get("displayName") == target_agent_display_name:
+                existing_agent = a
+                break
+                
+        if existing_agent:
+            print(f"Agent '{target_agent_display_name}' already exists. Deleting to recreate with Auth...")
+            delete_agent(existing_agent['name'], headers)
+            existing_agent = None
+        
+        # Prepare nl2sql_prompt and params for new agent creation
+        nl2sql_prompt = config.get("nl2sql_prompt", "")
+        params = config.get("params", {})
+        if "schema_context" in params:
+            nl2sql_prompt += "\n\nSchema Context:\n" + params["schema_context"]
+
+        # Create Authorization
+        auth_resource = create_authorization(project_id, location, headers, host)
+
+        # 2. Create Agent
+        print(f"Creating agent '{target_agent_display_name}'...")
+        
+        data_science_config = {
+            "bq_project_id": project_id,
+            "bq_dataset_id": bq_dataset_id,
+            "nl_query_config": {
+                "nl2sql_prompt": nl2sql_prompt
             }
         }
-    }
-    
-    agent_id = f"data-agent-{int(time.time())}"
-    params = {"agentId": agent_id}
-    
-    resp = requests.post(agents_url, headers=headers, json=payload)
-    if resp.status_code == 200:
-        new_agent = resp.json()
-        print("Agent created successfully!")
-        print(f"Agent ID: {new_agent['name'].split('/')[-1]}")
-        print(f"Full Name: {new_agent['name']}")
-        return new_agent['name'].split('/')[-1]
-    else:
-        print(f"Failed to create agent: {resp.status_code} - {resp.text}")
-        return None
+        
+        payload = {
+            "displayName": target_agent_display_name,
+            "description": config.get("description", "Automated Data Agent"),
+            "managed_agent_definition": {
+                "tool_settings": {
+                    "tool_description": "Use this agent to query BigQuery data about customers and orders."
+                },
+                "data_science_agent_config": data_science_config
+            }
+        }
+
+        if auth_resource:
+            payload["authorization_config"] = {
+                "tool_authorizations": [auth_resource]
+            }
+        
+        resp = requests.post(agents_url, headers=headers, json=payload)
+        agent_name = ""
+        
+        if resp.status_code == 200:
+            new_agent = resp.json()
+            print("Agent created successfully!")
+            agent_name = new_agent['name']
+            print(f"Agent ID: {agent_name.split('/')[-1]}")
+            print(f"Full Name: {agent_name}")
+        else:
+            print(f"Failed to create agent: {resp.status_code} - {resp.text}")
+            continue
+
+        # 3. Deploy Agent explicitly
+        print(f"Deploying agent '{target_agent_display_name}'...")
+        deploy_url = f"https://{host}/v1alpha/{agent_name}:deploy"
+        deploy_resp = requests.post(deploy_url, headers=headers, json={"name": agent_name})
+        
+        if deploy_resp.status_code == 200:
+            lro = deploy_resp.json()
+            print(f"Deployment LRO started: {lro.get('name')}")
+        elif deploy_resp.status_code == 400 and "Invalid agent state for deploy: ENABLED" in deploy_resp.text:
+             print("Agent already enabled.")
+        else:
+            print(f"Failed to deploy agent: {deploy_resp.status_code} - {deploy_resp.text}")
 
 if __name__ == "__main__":
-    deploy_agent()
+    deploy_agents_from_config()

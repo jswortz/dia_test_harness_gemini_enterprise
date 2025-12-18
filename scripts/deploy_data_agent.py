@@ -131,25 +131,45 @@ def deploy_agents_from_config():
             delete_agent(existing_agent['name'], headers)
             existing_agent = None
         
-        # Prepare nl2sql_prompt and params for new agent creation
-        nl2sql_prompt = config.get("nl2sql_prompt", "")
-        params = config.get("params", {})
-        if "schema_context" in params:
-            nl2sql_prompt += "\n\nSchema Context:\n" + params["schema_context"]
-
         # Create Authorization
         auth_resource = create_authorization(project_id, location, headers, host)
 
-        # 2. Create Agent
-        print(f"Creating agent '{target_agent_display_name}'...")
-        
+        # Prepare data_science_config
         data_science_config = {
             "bq_project_id": project_id,
             "bq_dataset_id": bq_dataset_id,
-            "nl_query_config": {
-                "nl2sql_prompt": nl2sql_prompt
-            }
+            "nl_query_config": {}
         }
+        
+        # Check for new 'dataScienceAgentConfig' structure
+        if "dataScienceAgentConfig" in config:
+            ds_config = config["dataScienceAgentConfig"]
+            nl_query = ds_config.get("nlQueryConfig", {})
+            
+            if "nl2sqlPrompt" in nl_query:
+                data_science_config["nl_query_config"]["nl2sqlPrompt"] = nl_query["nl2sqlPrompt"]
+            if "nl2pyPrompt" in nl_query:
+                 data_science_config["nl_query_config"]["nl2pyPrompt"] = nl_query["nl2pyPrompt"]
+            if "nl2sqlExample" in nl_query:
+                 data_science_config["nl_query_config"]["nl2sqlExamples"] = nl_query["nl2sqlExample"]
+            if "schemaDescription" in nl_query:
+                 data_science_config["nl_query_config"]["schemaDescription"] = nl_query["schemaDescription"]
+        else:
+            # Legacy support
+            nl2sql_prompt = config.get("nl2sql_prompt", "")
+            params = config.get("params", {})
+            if "schema_context" in params:
+                nl2sql_prompt += "\n\nSchema Context:\n" + params["schema_context"]
+            
+            data_science_config["nl_query_config"]["nl2sqlPrompt"] = nl2sql_prompt
+            if "nl2py_prompt" in params:
+                 data_science_config["nl_query_config"]["nl2pyPrompt"] = params["nl2py_prompt"]
+            if "nl2sql_example" in params:
+                 data_science_config["nl_query_config"]["nl2sqlExample"] = params["nl2sql_example"]
+            if "schema_description" in params:
+                 data_science_config["nl_query_config"]["schemaDescription"] = params["schema_description"]
+
+
         
         payload = {
             "displayName": target_agent_display_name,

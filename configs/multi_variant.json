@@ -2,43 +2,75 @@
     {
         "name": "baseline",
         "description": "Standard baseline configuration",
-        "nl2sql_prompt": "You are a specialized Data Scientist agent. Your job is to query the BigQuery database to answer user questions.",
-        "params": {},
+        "dataScienceAgentConfig": {
+            "nlQueryConfig": {
+                "nl2sqlPrompt": "You are a specialized Data Scientist agent. Your job is to query the BigQuery database to answer user questions."
+            }
+        },
         "data_store_ids": ["dummy-ds-1766018108"]
     },
     {
         "name": "few_shot_context",
-        "description": "Augmented with few-shot examples",
-        "nl2sql_prompt": "You are a specialized Data Scientist agent. Your job is to query the BigQuery database to answer user questions.\nHere are some examples of similar queries:",
-        "params": {
-            "examples": [
-                "Question: Count total orders\nAnswer: SELECT count(*) FROM orders",
-                "Question: List products in Electronics\nAnswer: SELECT * FROM products WHERE category = 'Electronics'"
-            ]
+        "description": "Configuration with a single few-shot example",
+        "dataScienceAgentConfig": {
+            "nlQueryConfig": {
+                "nl2sqlPrompt": "You are a specialized Data Scientist agent. Your job is to query the BigQuery database to answer user questions.",
+                "nl2sqlExample": {
+                    "query": "Count total orders",
+                    "expectedSql": "SELECT count(*) FROM orders",
+                    "expectedResponse": "The total count of orders is 50."
+                }
+            }
+        },
+        "data_store_ids": ["dummy-ds-1766018108"]
+    },
+    {
+        "name": "many_shot_context",
+        "description": "Configuration with multiple few-shot examples",
+        "dataScienceAgentConfig": {
+            "nlQueryConfig": {
+                "nl2sqlPrompt": "You are a specialized Data Scientist agent. Query the database to answer user questions.",
+                "nl2sqlExample": [
+                    {
+                        "query": "Count total orders",
+                        "expectedSql": "SELECT count(*) FROM orders",
+                        "expectedResponse": "The total count of orders is 50."
+                    },
+                    {
+                        "query": "List products in Electronics",
+                        "expectedSql": "SELECT * FROM products WHERE category = 'Electronics'",
+                        "expectedResponse": "Here are the electronics products: TV, Radio."
+                    },
+                    {
+                        "query": "Show me customer emails",
+                        "expectedSql": "SELECT email FROM customers",
+                        "expectedResponse": "Here are the customer emails: user@example.com."
+                    }
+                ]
+            }
         },
         "data_store_ids": ["dummy-ds-1766018108"]
     },
     {
         "name": "verbose_schema",
-        "description": "Augmented with verbose schema description",
-        "nl2sql_prompt": "You are a specialized Data Scientist agent. Your job is to query the BigQuery database to answer user questions. Use the detailed schema information provided to construct accurate queries.",
-        "params": {
-            "schema_context": "Table: orders (id, customer_id, amount, status, order_date). Table: products (id, name, category, price). Table: customers (id, name, email)."
+        "description": "Configuration with detailed schema description",
+        "dataScienceAgentConfig": {
+            "nlQueryConfig": {
+                "nl2sqlPrompt": "You are a specialized Data Scientist agent. Use the schema description to answer questions.",
+                "schemaDescription": "The database contains three main tables: 1. `orders`: Contains order details including `id`, `customer_id`, `amount`, `status`, and `order_date`. 2. `products`: Lists available products with `id`, `name`, `category`, and `price`. 3. `customers`: Stores customer information such as `id`, `name`, and `email`. Relationships: `orders.customer_id` references `customers.id`."
+            }
         },
         "data_store_ids": ["dummy-ds-1766018108"]
     },
     {
-        "name": "persona_business",
-        "description": "Business Intelligence Expert Persona",
-        "nl2sql_prompt": "You are a Senior Business Intelligence Analyst. Your goal is to provide actionable insights. When querying data, focus on metrics that matter to the business, like revenue, growth, and customer retention. Ensure your SQL is optimized and your explanations are business-friendly.",
-        "params": {},
-        "data_store_ids": ["dummy-ds-1766018108"]
-    },
-    {
-        "name": "cot_reasoning",
-        "description": "Chain-of-Thought Reasoning",
-        "nl2sql_prompt": "You are a Data Scientist. Before generating any SQL, you must first think step-by-step about the user's request. 1. Identify the core question. 2. Identify the tables needed. 3. Determine the necessary joins and filters. 4. Write the SQL. Explicitly output your reasoning steps before the SQL query.",
-        "params": {},
+        "name": "concise_schema",
+        "description": "Configuration with concise schema description",
+        "dataScienceAgentConfig": {
+             "nlQueryConfig": {
+                "nl2sqlPrompt": "You are a specialized Data Scientist agent.",
+                "schemaDescription": "Tables: orders (id, customer_id, amount), products (id, name, category), customers (id, name, email)."
+            }
+        },
         "data_store_ids": ["dummy-ds-1766018108"]
     }
 ]

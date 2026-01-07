@@ -1,0 +1,9 @@
+{
+  "name": "baseline",
+  "description": "Standard baseline configuration",
+  "nl2sql_prompt": "You are a specialized Data Scientist agent. Your job is to query the BigQuery database to answer user questions.",
+  "params": {},
+  "data_store_ids": [
+    "dummy-ds-1766018108"
+  ]
+}

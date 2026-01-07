@@ -1,0 +1,6 @@
+nl_question,expected_sql
+How many customers are there?,SELECT count(*) FROM `dia_test_dataset.customers`
+What are the distinct product categories?,SELECT DISTINCT category FROM `dia_test_dataset.products`
+"What's the total revenue by category?","SELECT category, SUM(price) as total_revenue FROM `dia_test_dataset.products` GROUP BY category"
+Show me the top 5 most expensive products,SELECT * FROM `dia_test_dataset.products` ORDER BY price DESC LIMIT 5
+Show me customer names who made purchases in December 2024,"SELECT c.name FROM `dia_test_dataset.customers` c JOIN `dia_test_dataset.orders` o ON c.id = o.customer_id WHERE FORMAT_DATE('%Y-%m', o.order_date) = '2024-12'"

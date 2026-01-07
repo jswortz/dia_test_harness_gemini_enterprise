@@ -1,0 +1,10 @@
+[
+  {
+    "question_id": "test-1",
+    "nl_question": "How many customers are there?",
+    "complexity": "Simple",
+    "expected_sql": "SELECT count(*) FROM `dataset.customers`",
+    "sql_pattern": "SELECT\\s+count\\(\\*\\)\\s+FROM\\s+`.*customers`",
+    "expected_result_type": "INTEGER"
+  }
+]

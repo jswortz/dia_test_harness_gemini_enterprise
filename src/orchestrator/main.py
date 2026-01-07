@@ -7,6 +7,10 @@ from .agent_client import MockAgentClient, RealAgentClient
 from .engine import TestEngine
 from dotenv import load_dotenv
 
+# Import iterative optimization components
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+from iterative.optimizer import IterativeOptimizer
+
 load_dotenv()
 
 # Configure Logging
@@ -83,6 +87,91 @@ def run_all(config_file, golden_set, output_file, parallel, use_real_api):
         logger.info(f"Summary: {correct_count}/{total} passed ({(correct_count/total)*100:.1f}%)")
     else:
         logger.info("Summary: No results (0 passed).")
+
+@cli.command()
+@click.option('--config-file', type=click.Path(exists=True), required=True, help='Path to agent configuration JSON')
+@click.option('--golden-set', type=click.Path(exists=True), required=True, help='Path to golden set (JSON/CSV/Excel)')
+@click.option('--max-iterations', default=10, help='Maximum number of optimization iterations')
+def optimize(config_file, golden_set, max_iterations):
+    """
+    Run iterative optimization for a single agent.
+
+    This command:
+    1. Deploys a single agent with the baseline configuration
+    2. Runs evaluation against the golden set
+    3. Analyzes failures and suggests prompt improvements
+    4. Updates the agent via PATCH API
+    5. Repeats until user stops or accuracy reaches 100%
+
+    Results are tracked in results/trajectory_history.json
+    """
+    logger.info("Starting Iterative Agent Optimization...")
+
+    # Load configuration
+    with open(config_file, 'r') as f:
+        config_data = json.load(f)
+
+    # Handle both single config and multi-variant config files
+    if isinstance(config_data, list):
+        # Multi-variant config - extract first one or look for "baseline"
+        baseline_config = None
+        for cfg in config_data:
+            if cfg.get("name") == "baseline":
+                baseline_config = cfg
+                break
+        if not baseline_config:
+            baseline_config = config_data[0]  # Use first config if no baseline found
+        config = baseline_config
+    elif isinstance(config_data, dict):
+        # Check if it's a wrapped config
+        if "configs" in config_data:
+            configs_list = config_data["configs"]
+            config = configs_list[0] if configs_list else {}
+        else:
+            # Single config
+            config = config_data
+    else:
+        raise click.ClickException("Invalid config file format")
+
+    # Validate required environment variables
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+    location = os.getenv("DIA_LOCATION", "global")
+    engine_id = os.getenv("DIA_ENGINE_ID")
+    dataset_id = os.getenv("BQ_DATASET_ID")
+
+    if not all([project_id, location, engine_id, dataset_id]):
+        missing = []
+        if not project_id:
+            missing.append("GOOGLE_CLOUD_PROJECT")
+        if not engine_id:
+            missing.append("DIA_ENGINE_ID")
+        if not dataset_id:
+            missing.append("BQ_DATASET_ID")
+        raise click.ClickException(f"Missing required environment variables: {', '.join(missing)}")
+
+    logger.info(f"Configuration:")
+    logger.info(f"  Project: {project_id}")
+    logger.info(f"  Location: {location}")
+    logger.info(f"  Engine: {engine_id}")
+    logger.info(f"  Dataset: {dataset_id}")
+    logger.info(f"  Config: {config.get('name', 'unknown')}")
+    logger.info(f"  Golden Set: {golden_set}")
+    logger.info(f"  Max Iterations: {max_iterations}")
+
+    # Initialize and run optimizer
+    optimizer = IterativeOptimizer(
+        config=config,
+        golden_set_path=golden_set,
+        project_id=project_id,
+        location=location,
+        engine_id=engine_id,
+        dataset_id=dataset_id,
+        max_iterations=max_iterations
+    )
+
+    optimizer.run()
+
+    logger.info("Optimization complete!")
 
 if __name__ == '__main__':
     cli()

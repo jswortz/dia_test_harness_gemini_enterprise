@@ -37,7 +37,8 @@ class SingleAgentEvaluator:
         project_id: str,
         location: str,
         engine_id: str,
-        output_path: str = "results/eval_results.jsonl"
+        output_path: str = None,
+        timestamp: str = None
     ):
         """
         Initialize evaluator.
@@ -47,13 +48,23 @@ class SingleAgentEvaluator:
             project_id: Google Cloud project ID
             location: Location (e.g., "global")
             engine_id: Discovery Engine ID
-            output_path: Path to save evaluation results
+            output_path: Path to save evaluation results (auto-generated with timestamp if None)
+            timestamp: Timestamp string for filenames (auto-generated if None)
         """
         self.agent_id = agent_id
         self.project_id = project_id
         self.location = location
         self.engine_id = engine_id
+
+        # Generate timestamped filename if not provided
+        if output_path is None:
+            from datetime import datetime
+            if timestamp is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = f"results/eval_{timestamp}.jsonl"
+
         self.output_path = output_path
+        self.timestamp = timestamp
 
         # Initialize components
         self.loader = GoldenSetLoader()
@@ -103,6 +114,162 @@ class SingleAgentEvaluator:
         self._display_summary(metrics, failures)
 
         return results, metrics, failures
+
+    def evaluate_with_repeats(
+        self,
+        golden_set_path: str,
+        num_repeats: int = 3
+    ) -> Tuple[List[Dict], Dict[str, Any], List[Dict]]:
+        """
+        Run evaluation multiple times and aggregate results.
+
+        Args:
+            golden_set_path: Path to golden set file
+            num_repeats: Number of times to repeat each test (default: 3)
+
+        Returns:
+            Tuple of:
+                - all_results: List of ALL results (num_repeats * golden_set_size)
+                - aggregated_metrics: Aggregated metrics with mean/std/min/max
+                - failures: Failures from WORST run (for conservative improvement)
+        """
+        print(f"\n{'='*80}")
+        print(f"RUNNING EVALUATION WITH {num_repeats} REPEATS")
+        print(f"{'='*80}")
+        print(f"Agent ID: {self.agent_id}")
+        print(f"Golden Set: {golden_set_path}\n")
+
+        all_results = []
+        repeat_metrics = []
+
+        for repeat_num in range(1, num_repeats + 1):
+            print(f"\n{'─'*80}")
+            print(f"Repeat {repeat_num}/{num_repeats}")
+            print(f"{'─'*80}\n")
+
+            # Create new runner for this repeat to clear state
+            self.runner = TestRunner(
+                loader=self.loader,
+                client=self.client,
+                comparator=self.comparator,
+                judge=self.judge,
+                output_path=f"{self.output_path}.repeat{repeat_num}"
+            )
+
+            # Run evaluation
+            self.runner.run(golden_set_path)
+            results = self.runner.results
+
+            # Tag each result with repeat number
+            for result in results:
+                result['repeat_num'] = repeat_num
+
+            all_results.extend(results)
+
+            # Calculate metrics for this repeat
+            metrics = self.runner.calculate_metrics(results)
+            metrics['repeat_num'] = repeat_num
+            repeat_metrics.append(metrics)
+
+            print(f"Repeat {repeat_num} Accuracy: {metrics['accuracy']:.2f}%")
+
+        # Aggregate metrics
+        aggregated_metrics = self._aggregate_repeat_metrics(repeat_metrics)
+
+        # Extract failures from WORST repeat (conservative approach)
+        worst_repeat = min(repeat_metrics, key=lambda m: m['accuracy'])
+        worst_repeat_results = [r for r in all_results if r['repeat_num'] == worst_repeat['repeat_num']]
+        failures = self.runner.extract_failures(worst_repeat_results)
+
+        # Display summary
+        self._display_repeat_summary(aggregated_metrics, repeat_metrics, failures)
+
+        return all_results, aggregated_metrics, failures
+
+    def _aggregate_repeat_metrics(self, repeat_metrics: List[Dict]) -> Dict[str, Any]:
+        """
+        Aggregate metrics across repeats.
+
+        Returns metrics with mean, std, min, max for accuracy and other stats.
+        """
+        import statistics
+
+        accuracies = [m['accuracy'] for m in repeat_metrics]
+        exact_matches = [m['exact_match'] for m in repeat_metrics]
+        semantic_eqs = [m['semantically_equivalent'] for m in repeat_metrics]
+        failures = [m['failures'] for m in repeat_metrics]
+
+        return {
+            'total': repeat_metrics[0]['total'],  # Same across all repeats
+            'num_repeats': len(repeat_metrics),
+
+            'accuracy': {
+                'mean': round(statistics.mean(accuracies), 2),
+                'std': round(statistics.stdev(accuracies), 2) if len(accuracies) > 1 else 0.0,
+                'min': round(min(accuracies), 2),
+                'max': round(max(accuracies), 2),
+                'values': [round(a, 2) for a in accuracies]
+            },
+
+            'exact_match': {
+                'mean': round(statistics.mean(exact_matches), 2),
+                'std': round(statistics.stdev(exact_matches), 2) if len(exact_matches) > 1 else 0.0,
+                'min': min(exact_matches),
+                'max': max(exact_matches)
+            },
+
+            'semantically_equivalent': {
+                'mean': round(statistics.mean(semantic_eqs), 2),
+                'std': round(statistics.stdev(semantic_eqs), 2) if len(semantic_eqs) > 1 else 0.0,
+                'min': min(semantic_eqs),
+                'max': max(semantic_eqs)
+            },
+
+            'failures': {
+                'mean': round(statistics.mean(failures), 2),
+                'std': round(statistics.stdev(failures), 2) if len(failures) > 1 else 0.0,
+                'min': min(failures),
+                'max': max(failures)
+            },
+
+            'error_count': repeat_metrics[0].get('error_count', 0)  # Assuming same across repeats
+        }
+
+    def _display_repeat_summary(
+        self,
+        aggregated_metrics: Dict[str, Any],
+        repeat_metrics: List[Dict],
+        failures: List[Dict]
+    ):
+        """Display aggregated evaluation summary."""
+        print(f"\n{'='*80}")
+        print(f"AGGREGATED RESULTS ({aggregated_metrics['num_repeats']} repeats)")
+        print(f"{'='*80}\n")
+
+        acc = aggregated_metrics['accuracy']
+        print(f"Accuracy: {acc['mean']:.2f}% ± {acc['std']:.2f}%")
+        print(f"  Range: {acc['min']:.2f}% - {acc['max']:.2f}%")
+        print(f"  Individual runs: {acc['values']}")
+
+        print(f"\nBreakdown:")
+        exact = aggregated_metrics['exact_match']
+        print(f"  Exact Match: {exact['mean']:.1f} ± {exact['std']:.1f} (range: {exact['min']}-{exact['max']})")
+
+        semantic = aggregated_metrics['semantically_equivalent']
+        print(f"  Semantically Equivalent: {semantic['mean']:.1f} ± {semantic['std']:.1f} (range: {semantic['min']}-{semantic['max']})")
+
+        fails = aggregated_metrics['failures']
+        print(f"  Failures: {fails['mean']:.1f} ± {fails['std']:.1f} (range: {fails['min']}-{fails['max']})")
+
+        if failures:
+            print(f"\n{'='*80}")
+            print(f"FAILURES FROM WORST RUN ({len(failures)} failures)")
+            print(f"{'='*80}")
+            for i, failure in enumerate(failures[:5], 1):  # Show first 5
+                print(f"\n{i}. {failure['question']}")
+                print(f"   Issue: {failure['issue']}")
+            if len(failures) > 5:
+                print(f"\n... and {len(failures) - 5} more failures")
 
     def _display_summary(self, metrics: Dict[str, Any], failures: List[Dict]):
         """Display evaluation summary to user."""

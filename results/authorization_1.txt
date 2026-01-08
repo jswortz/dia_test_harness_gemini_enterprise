@@ -1,2 +1,0 @@
-Authorization URL:
-https://accounts.google.com/o/oauth2/v2/auth?client_id=679926387543-v7ifpritf46tkvf24u0j6cjg28r11hjo.apps.googleusercontent.com&redirect_uri=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fstatic%2Foauth%2Foauth.html&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fbigquery&include_granted_scopes=true&response_type=code&access_type=offline&prompt=consent&state=%C2%B3%23r%14B%C1%82y%A3%E0%5C%DF1%FF%40%99N%11k/%D7%B1%E1%26%1FW%95Rx%E1%9F

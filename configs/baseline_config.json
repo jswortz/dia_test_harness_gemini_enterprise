@@ -1,9 +1,42 @@
 {
   "name": "baseline",
-  "description": "Standard baseline configuration",
-  "nl2sql_prompt": "You are a specialized Data Scientist agent. Your job is to query the BigQuery database to answer user questions.",
+  "description": "Comprehensive baseline configuration with all Google Cloud Data Agent API fields",
+
+  "display_name": "Data Agent - Baseline",
+  "icon_uri": null,
+
+  "tool_description": "Use this agent to query BigQuery data and answer analytical questions about customers, products, and orders.",
+
+  "nl2sql_prompt": "You are a specialized Data Scientist agent. Your job is to query the BigQuery database to answer user questions.\n\nIMPORTANT GUIDELINES:\n1. Generate accurate BigQuery SQL queries\n2. Use proper table names with dataset prefix\n3. Select only the columns needed to answer the question\n4. Use appropriate aggregations, JOINs, and WHERE clauses\n5. Follow BigQuery SQL syntax strictly",
+
+  "nl2py_prompt": null,
+
+  "schema_description": "The dataset contains e-commerce data with the following tables:\n\n1. customers table: Contains customer information\n   - id (STRING): Unique customer identifier\n   - name (STRING): Customer full name\n   - email (STRING): Customer email address\n   - region (STRING): Customer geographic region\n\n2. products table: Contains product catalog\n   - id (STRING): Unique product identifier\n   - name (STRING): Product name\n   - category (STRING): Product category\n   - price (FLOAT): Product price in USD\n\n3. orders table: Contains order transactions\n   - id (STRING): Unique order identifier\n   - customer_id (STRING): Foreign key to customers.id\n   - amount (FLOAT): Total order amount in USD\n   - status (STRING): Order status (pending, completed, cancelled)\n   - order_date (DATE): Date when order was placed\n\n4. order_items table: Contains individual items within orders\n   - id (STRING): Unique order item identifier\n   - order_id (STRING): Foreign key to orders.id\n   - product_id (STRING): Foreign key to products.id\n   - quantity (INTEGER): Number of units ordered\n   - unit_price (FLOAT): Price per unit at time of order",
+
+  "nl2sql_examples": [
+    {
+      "query": "How many customers are there?",
+      "expected_sql": "SELECT COUNT(*) FROM `dataset.customers`",
+      "expected_response": "There are X customers in the database."
+    },
+    {
+      "query": "List all product categories",
+      "expected_sql": "SELECT DISTINCT category FROM `dataset.products`",
+      "expected_response": "The product categories are: [list of categories]"
+    },
+    {
+      "query": "What are the top 5 most expensive products?",
+      "expected_sql": "SELECT name, price FROM `dataset.products` ORDER BY price DESC LIMIT 5",
+      "expected_response": "The top 5 most expensive products are: [product list with prices]"
+    }
+  ],
+
+  "allowed_tables": [],
+  "blocked_tables": [],
+
   "params": {},
-  "data_store_ids": [
-    "dummy-ds-1766018108"
-  ]
+  "data_store_ids": ["dummy-ds-1766018108"],
+
+  "bq_project_id": "${GOOGLE_CLOUD_PROJECT}",
+  "bq_dataset_id": "${BQ_DATASET_ID}"
 }

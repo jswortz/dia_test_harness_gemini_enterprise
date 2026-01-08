@@ -30,19 +30,19 @@ uv pip install -e .
 ### Data Generation and Loading
 ```bash
 # Generate synthetic e-commerce data
-python scripts/generate_data.py
+python scripts/data/generate_data.py
 
 # Load data into BigQuery
-python scripts/load_to_bq.py
+python scripts/data/load_to_bq.py
 
 # Generate golden test set
-python scripts/generate_golden_set.py
+python scripts/data/generate_golden_set.py
 ```
 
 ### Agent Deployment
 ```bash
 # Deploy all 5 agent variants (uses delete-and-recreate strategy)
-python scripts/deploy_data_agent.py
+python scripts/deployment/deploy_data_agent.py
 ```
 
 ### Testing and Evaluation
@@ -53,7 +53,7 @@ Before running evaluations, agents must be authorized to access BigQuery:
 
 ```bash
 # Generate OAuth authorization URL for your agent
-python scripts/authorize_agent.py
+python scripts/deployment/authorize_agent.py
 
 # This will:
 # 1. Query the agent to trigger authorization requirements
@@ -64,45 +64,103 @@ python scripts/authorize_agent.py
 # After visiting the URL and authorizing, proceed with tests:
 ```
 
-Then run evaluation tests:
+#### Iterative Optimization (Recommended)
+
+**NEW: Two-Step Workflow with Separate Deployment**
+
+**Step 1: First-Time Deployment and Authorization**
 
 ```bash
-# Test the evaluation pipeline with debug set (single question)
-python scripts/test_evaluation.py
+# Deploy the agent (one-time setup)
+dia-harness deploy --config-file configs/baseline_config.json
 
-# Run golden test evaluations (full test suite)
-python scripts/run_golden_test.py
+# This will:
+# 1. Deploy the agent to Gemini Enterprise
+# 2. Display OAuth authorization instructions
+# 3. Provide links to authorize via UI or CLI
 
-# Run the test harness CLI (orchestrator)
-dia-harness run-all --config-file configs/multi_variant.json --golden-set data/golden_set.json --use-real-api
-
-# Debug specific agent queries
-python scripts/debug_agent_query.py
+# After deployment, authorize the agent via Gemini Enterprise UI:
+# - Navigate to the provided console link
+# - Find your agent in the agents list
+# - Test the agent and click the OAuth authorization link
+# - Grant BigQuery access permissions
 ```
 
-### Inspection and Verification
+**Step 2: Run Optimization (uses existing authorized agent)**
+
+```bash
+# Basic optimization with repeat measurements (default: 3)
+dia-harness optimize \
+  --config-file configs/baseline_config.json \
+  --golden-set data/golden_set.json \
+  --max-iterations 10
+
+# With test dataset (overfitting detection)
+dia-harness optimize \
+  --config-file configs/baseline_config.json \
+  --golden-set data/golden_set.json \
+  --test-set data/test_set.json \
+  --max-iterations 10 \
+  --num-repeats 3
+
+# Fully automated (no manual approval)
+dia-harness optimize \
+  --config-file configs/baseline_config.json \
+  --golden-set data/golden_set.json \
+  --max-iterations 10 \
+  --auto-accept
+```
+
+**CLI Commands:**
+- `dia-harness deploy` - Deploy agent and show OAuth authorization instructions (one-time setup)
+- `dia-harness optimize` - Run optimization on existing deployed agent (always)
+
+**CLI Flags (for optimize):**
+- `--num-repeats N` - Run each test N times (default: 3) for statistical reliability
+- `--test-set PATH` - Optional held-out test set (not used for optimization decisions)
+- `--auto-accept` - Automatically approve all AI-suggested improvements
+- `--max-iterations N` - Maximum optimization iterations (default: 10)
+
+**Outputs:**
+- `results/trajectory_history.json` - Full iteration history with train/test metrics
+- `results/charts/*.png` - 6 visualization charts (accuracy trends, distributions, heatmaps, etc.)
+- `results/OPTIMIZATION_REPORT.md` - Comprehensive markdown report
+- `results/eval_iteration_*.jsonl` - Per-iteration evaluation results
+
+### Timestamped Results
+
+All optimization runs generate timestamped artifacts (format: `YYYYMMDD_HHMMSS`):
+
+**Outputs:**
+- `results/trajectory_history_<timestamp>.json` - Full iteration history with train/test metrics
+- `results/eval_train_<timestamp>.jsonl` - Training set evaluation results
+- `results/eval_test_<timestamp>.jsonl` - Test set evaluation results (if provided)
+- `results/eval_train_<timestamp>.jsonl.repeat<N>` - Individual repeat measurements
+- `results/OPTIMIZATION_REPORT_<timestamp>.md` - Comprehensive markdown report with charts
+- `results/charts/*.png` - 6 visualization charts (accuracy trends, distributions, heatmaps, etc.)
+
+**Run ID**: Displayed at start of optimization, used consistently across all files.
+
+#### Traditional Evaluation
+
+```bash
+# Run the test harness CLI (orchestrator - multi-variant)
+dia-harness run-all --config-file configs/multi_variant.json --golden-set data/golden_set.json --use-real-api
+```
+
+### Utility Scripts
+
+Located in `scripts/utils/`:
+
 ```bash
 # Check environment variables
-python scripts/check_env.py
-
-# Inspect engine configuration
-python scripts/inspect_engine.py
-
-# Inspect assistant configuration
-python scripts/inspect_assistant.py
-
-# Inspect specific agent
-python scripts/inspect_agent_name.py
+python scripts/utils/check_env.py
 
 # Check Long-Running Operations (LRO) status
-python scripts/check_lro.py
-
-# Verify API connectivity
-python scripts/verify_connectivity.py
-
-# Example: Query a specific agent with agentsSpec (shows correct usage)
-AGENT_ID=your-agent-id python scripts/example_query_agent.py
+python scripts/utils/check_lro.py
 ```
+
+**Note**: Debug and inspection scripts have been removed in favor of CLI commands.
 
 ## Architecture
 
@@ -128,6 +186,45 @@ Agent variants are defined in `configs/multi_variant.json` with fields:
 - `nl2sql_prompt`: Base prompt template
 - `params`: Additional context (examples, schema_context)
 - `data_store_ids`: Associated datastores
+
+### Comprehensive Baseline Configuration
+
+**NEW:** `configs/baseline_config.json` now includes ALL available API fields:
+
+```json
+{
+  "name": "baseline",
+  "description": "Comprehensive baseline with all API fields",
+  "display_name": "Data Agent - Baseline",
+  "icon_uri": null,
+  "tool_description": "Use this agent to query BigQuery data...",
+
+  "nl2sql_prompt": "You are a specialized Data Scientist agent...",
+  "nl2py_prompt": null,
+
+  "schema_description": "The dataset contains e-commerce data with...",
+
+  "nl2sql_examples": [
+    {
+      "query": "How many customers are there?",
+      "expected_sql": "SELECT COUNT(*) FROM `dataset.customers`",
+      "expected_response": "There are X customers in the database."
+    }
+  ],
+
+  "allowed_tables": [],
+  "blocked_tables": [],
+
+  "bq_project_id": "${GOOGLE_CLOUD_PROJECT}",
+  "bq_dataset_id": "${BQ_DATASET_ID}"
+}
+```
+
+**Benefits:**
+- Schema description helps agent understand table relationships
+- Few-shot examples provide concrete patterns
+- Table access control for security
+- Complete configuration enables better optimization
 
 ### Delete-and-Recreate Deployment Strategy
 
@@ -218,13 +315,31 @@ Mock client provides deterministic responses based on question keywords (count, 
 
 ## Important Files
 
+### Configuration
+- `configs/baseline_config.json`: **NEW** Comprehensive baseline with ALL API fields
 - `configs/multi_variant.json`: 5 agent configurations for parallel testing
-- `src/orchestrator/main.py`: CLI entry point (`dia-harness` command)
+
+### Iterative Optimization (NEW)
+- `src/iterative/optimizer.py`: Main orchestration loop with repeat measurements, test datasets, auto-accept
+- `src/iterative/evaluator.py`: Evaluation with repeat measurement aggregation
+- `src/iterative/deployer.py`: Agent deployment with comprehensive field support
+- `src/iterative/tracker.py`: Trajectory tracking with train/test metrics
+- `src/iterative/prompt_improver.py`: AI-driven prompt refinement with auto-accept
+- `src/iterative/config_analyzer.py`: **NEW** AI analysis of which config fields to improve
+- `src/iterative/visualizer.py`: **NEW** Chart generation (6 chart types)
+- `src/iterative/report_generator.py`: **NEW** Comprehensive markdown reports
+
+### Orchestrator & CLI
+- `src/orchestrator/main.py`: CLI entry point (`dia-harness` command) with new flags
 - `src/orchestrator/engine.py`: TestEngine orchestrates parallel config evaluation
 - `src/orchestrator/agent_client.py`: Agent deployment and querying (persistent engine model)
+
+### Evaluation
 - `src/evaluation/runner.py`: Golden set test execution with session follow-up
 - `src/evaluation/evaluator.py`: SQL comparison and LLM-based judgement
 - `src/evaluation/agent_client.py`: Agent query client with `agentsSpec` routing
+
+### Scripts
 - `scripts/deploy_data_agent.py`: Multi-variant deployment with OAuth authorization
 - `scripts/authorize_agent.py`: **OAuth authorization URL generator** - run this first before evaluations
 - `scripts/test_evaluation.py`: Full evaluation pipeline test with single test case

@@ -23,24 +23,34 @@ class TrajectoryTracker:
     Provides comparison capabilities to analyze improvements or regressions.
     """
 
-    def __init__(self, agent_name: str = "baseline", output_path: str = "results/trajectory_history.json"):
+    def __init__(self, agent_name: str = "baseline", output_path: str = None, timestamp: str = None):
         """
         Initialize tracker.
 
         Args:
             agent_name: Name of the agent being optimized
-            output_path: Path to save trajectory history JSON
+            output_path: Path to save trajectory history JSON (auto-generated with timestamp if None)
+            timestamp: Timestamp string to use for filename (auto-generated if None)
         """
         self.agent_name = agent_name
+
+        # Generate timestamped filename if output_path not provided
+        if output_path is None:
+            if timestamp is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = f"results/trajectory_history_{timestamp}.json"
+
         self.output_path = output_path
+        self.timestamp = timestamp
         self.history = {
             "agent_name": agent_name,
             "start_time": datetime.utcnow().isoformat(),
             "iterations": []
         }
 
-        # Load existing history if available
-        if Path(output_path).exists():
+        # Only load existing history if a specific path was provided (not auto-generated)
+        # For timestamped runs, always start fresh
+        if timestamp is None and Path(output_path).exists():
             try:
                 with open(output_path, 'r') as f:
                     self.history = json.load(f)
@@ -55,7 +65,9 @@ class TrajectoryTracker:
         results: List[Dict],
         metrics: Dict[str, Any],
         failures: List[Dict],
-        prompt_changes: str = ""
+        prompt_changes: str = "",
+        test_results: Optional[List[Dict]] = None,
+        test_metrics: Optional[Dict[str, Any]] = None
     ):
         """
         Add an iteration to the trajectory.
@@ -63,22 +75,82 @@ class TrajectoryTracker:
         Args:
             iteration_num: Iteration number (1, 2, 3, ...)
             config: Agent configuration (nl2sql_prompt, params, etc.)
-            results: Full test results (list of dicts from TestRunner)
-            metrics: Calculated metrics (accuracy, exact_match, etc.)
+            results: Full test results from training set (list of dicts from TestRunner)
+            metrics: Calculated metrics from training set (accuracy, exact_match, etc.)
             failures: List of failed test cases with details
             prompt_changes: Description of what changed in the prompt
+            test_results: Optional results from held-out test set
+            test_metrics: Optional metrics from held-out test set
         """
+        # Build evaluation structure for report generator compatibility
+        evaluation = {
+            "train": self._convert_metrics_to_eval_format(metrics, failures)
+        }
+
+        # Add test evaluation if provided
+        if test_metrics is not None:
+            test_failures = []  # Test failures are already in test_results
+            evaluation["test"] = self._convert_metrics_to_eval_format(test_metrics, test_failures)
+
         iteration_record = {
             "iteration": iteration_num,
             "timestamp": datetime.utcnow().isoformat(),
-            "config": config,
+            "configuration": config,  # Changed from "config" to match report_generator
+            "evaluation": evaluation,
+            "prompt_changes": prompt_changes,
+            # Keep raw data for backward compatibility and detailed analysis
             "results": results,
             "metrics": metrics,
-            "failures": failures,
-            "prompt_changes": prompt_changes
+            "failures": failures
         }
 
+        # Add test set data if provided
+        if test_results is not None:
+            iteration_record["test_results"] = test_results
+        if test_metrics is not None:
+            iteration_record["test_metrics"] = test_metrics
+
         self.history["iterations"].append(iteration_record)
+
+    def _convert_metrics_to_eval_format(self, metrics: Dict[str, Any], failures: List[Dict]) -> Dict[str, Any]:
+        """
+        Convert metrics dict to evaluation format expected by report generator.
+
+        Args:
+            metrics: Dict with accuracy, total, etc. (may have nested mean/std/values)
+            failures: List of failure dicts
+
+        Returns:
+            Dict in evaluation format
+        """
+        # Extract accuracy - handle both simple float and nested dict with mean/values
+        if isinstance(metrics.get("accuracy"), dict):
+            # New format with repeat measurements
+            accuracy = metrics["accuracy"]["mean"] / 100.0  # Convert percentage to decimal
+            repeat_measurements = metrics["accuracy"].get("values", [])
+            repeat_measurements = [v / 100.0 for v in repeat_measurements]  # Convert to decimals
+        else:
+            # Old format with simple value
+            accuracy = metrics.get("accuracy", 0.0)
+            if accuracy > 1.0:  # If it's a percentage
+                accuracy = accuracy / 100.0
+            repeat_measurements = None
+
+        total_cases = metrics.get("total", 0)
+        correct = int(accuracy * total_cases) if total_cases > 0 else 0
+
+        eval_format = {
+            "accuracy": accuracy,
+            "total_cases": total_cases,
+            "correct": correct,
+            "failures": failures
+        }
+
+        # Add repeat measurements if available
+        if repeat_measurements and len(repeat_measurements) > 1:
+            eval_format["repeat_measurements"] = repeat_measurements
+
+        return eval_format
 
     def get_last_iteration(self) -> Optional[Dict]:
         """
@@ -184,11 +256,18 @@ class TrajectoryTracker:
         if not self.history["iterations"]:
             return {"error": "No iterations recorded"}
 
-        iterations = self.history["iterations"]
-        accuracy_progression = [it["metrics"]["accuracy"] for it in iterations]
+        def _extract_accuracy(metrics: Dict) -> float:
+            """Extract accuracy value whether it's a float or dict (from repeats)."""
+            acc = metrics.get("accuracy", 0.0)
+            if isinstance(acc, dict):
+                return acc.get("mean", 0.0)
+            return acc
 
-        best_iter = max(iterations, key=lambda x: x["metrics"]["accuracy"])
-        worst_iter = min(iterations, key=lambda x: x["metrics"]["accuracy"])
+        iterations = self.history["iterations"]
+        accuracy_progression = [_extract_accuracy(it["metrics"]) for it in iterations]
+
+        best_iter = max(iterations, key=lambda x: _extract_accuracy(x["metrics"]))
+        worst_iter = min(iterations, key=lambda x: _extract_accuracy(x["metrics"]))
 
         overall_improvement = accuracy_progression[-1] - accuracy_progression[0]
 
@@ -196,11 +275,11 @@ class TrajectoryTracker:
             "total_iterations": len(iterations),
             "best_iteration": {
                 "iteration": best_iter["iteration"],
-                "accuracy": best_iter["metrics"]["accuracy"]
+                "accuracy": _extract_accuracy(best_iter["metrics"])
             },
             "worst_iteration": {
                 "iteration": worst_iter["iteration"],
-                "accuracy": worst_iter["metrics"]["accuracy"]
+                "accuracy": _extract_accuracy(worst_iter["metrics"])
             },
             "accuracy_progression": accuracy_progression,
             "overall_improvement": round(overall_improvement, 2)

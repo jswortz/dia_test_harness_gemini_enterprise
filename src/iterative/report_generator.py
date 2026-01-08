@@ -1,0 +1,599 @@
+"""Report generator for iterative agent optimization.
+
+Generates comprehensive markdown reports with:
+- Executive summary with key results
+- ASCII charts and embedded visualizations
+- Iteration-by-iteration details
+- Configuration evolution tracking
+- Final recommendations
+- Reproduction commands
+"""
+
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+from statistics import mean, stdev
+
+
+class OptimizationReportGenerator:
+    """Generates comprehensive markdown reports for optimization runs."""
+
+    def __init__(self, output_dir: str = "results"):
+        """Initialize report generator.
+
+        Args:
+            output_dir: Directory to write reports to
+        """
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(exist_ok=True)
+
+    def generate_report(
+        self,
+        trajectory_history: Dict,
+        chart_paths: List[str],
+        agent_id: str,
+        iteration_count: Optional[int] = None,
+    ) -> str:
+        """Generate comprehensive optimization report.
+
+        Args:
+            trajectory_history: Optimization trajectory data with metrics and configs
+            chart_paths: List of paths to generated chart images
+            agent_id: ID of the agent being optimized
+            iteration_count: Number of iterations (inferred if not provided)
+
+        Returns:
+            Path to generated report file
+        """
+        # Infer iteration count from trajectory
+        if iteration_count is None:
+            iteration_count = len(trajectory_history.get("iterations", []))
+
+        # Build report sections
+        sections = [
+            self._generate_header(agent_id, iteration_count),
+            self._generate_executive_summary(trajectory_history),
+            self._generate_visualizations(chart_paths),
+            self._generate_iteration_details(trajectory_history),
+            self._generate_configuration_evolution(trajectory_history),
+            self._generate_recommendations(trajectory_history),
+            self._generate_appendix(trajectory_history, agent_id),
+        ]
+
+        # Combine all sections
+        report_content = "\n\n".join(sections)
+
+        # Write to file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = self.output_dir / f"OPTIMIZATION_REPORT_{timestamp}.md"
+        report_path.write_text(report_content)
+
+        return str(report_path)
+
+    def _generate_header(self, agent_id: str, iteration_count: int) -> str:
+        """Generate report header."""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return f"""# Agent Optimization Report
+
+**Agent ID:** `{agent_id}`
+**Report Generated:** {timestamp}
+**Total Iterations:** {iteration_count}
+**Framework:** Data Insights Agent (DIA) Test Harness
+
+---
+"""
+
+    def _normalize_iteration(self, iteration: Dict) -> Dict:
+        """Normalize iteration to new format (backward compatibility).
+
+        Converts old format with "metrics", "config", "failures"
+        to new format with "evaluation" and "configuration".
+        """
+        # If already in new format, return as-is
+        if "evaluation" in iteration:
+            return iteration
+
+        # Convert old format to new format
+        normalized = iteration.copy()
+
+        # Convert "config" -> "configuration"
+        if "config" in normalized and "configuration" not in normalized:
+            normalized["configuration"] = normalized["config"]
+
+        # Convert "metrics" + "failures" -> "evaluation"
+        if "metrics" in normalized and "evaluation" not in normalized:
+            metrics = normalized["metrics"]
+            failures = normalized.get("failures", [])
+
+            # Extract accuracy (handle both dict and float formats)
+            if isinstance(metrics.get("accuracy"), dict):
+                accuracy = metrics["accuracy"].get("mean", 0.0) / 100.0
+                repeat_measurements = [v / 100.0 for v in metrics["accuracy"].get("values", [])]
+            else:
+                accuracy = metrics.get("accuracy", 0.0)
+                if accuracy > 1.0:  # Convert percentage to decimal
+                    accuracy = accuracy / 100.0
+                repeat_measurements = []
+
+            total_cases = metrics.get("total", 0)
+            correct = int(accuracy * total_cases) if total_cases > 0 else 0
+
+            # Build evaluation structure
+            train_eval = {
+                "accuracy": accuracy,
+                "total_cases": total_cases,
+                "correct": correct,
+                "failures": failures
+            }
+
+            if repeat_measurements and len(repeat_measurements) > 1:
+                train_eval["repeat_measurements"] = repeat_measurements
+
+            normalized["evaluation"] = {"train": train_eval}
+
+            # Add test evaluation if available
+            if "test_metrics" in normalized:
+                test_metrics = normalized["test_metrics"]
+                test_failures = normalized.get("test_failures", [])
+
+                if isinstance(test_metrics.get("accuracy"), dict):
+                    test_accuracy = test_metrics["accuracy"].get("mean", 0.0) / 100.0
+                    test_repeat = [v / 100.0 for v in test_metrics["accuracy"].get("values", [])]
+                else:
+                    test_accuracy = test_metrics.get("accuracy", 0.0)
+                    if test_accuracy > 1.0:
+                        test_accuracy = test_accuracy / 100.0
+                    test_repeat = []
+
+                test_total = test_metrics.get("total", 0)
+                test_correct = int(test_accuracy * test_total) if test_total > 0 else 0
+
+                test_eval = {
+                    "accuracy": test_accuracy,
+                    "total_cases": test_total,
+                    "correct": test_correct,
+                    "failures": test_failures
+                }
+
+                if test_repeat and len(test_repeat) > 1:
+                    test_eval["repeat_measurements"] = test_repeat
+
+                normalized["evaluation"]["test"] = test_eval
+
+        return normalized
+
+    def _generate_executive_summary(self, trajectory: Dict) -> str:
+        """Generate executive summary with key results."""
+        iterations = trajectory.get("iterations", [])
+        if not iterations:
+            return "## Executive Summary\n\nNo iterations completed."
+
+        # Extract metrics across iterations
+        train_accuracies = []
+        test_accuracies = []
+
+        for iteration in iterations:
+            # Normalize to new format
+            iteration = self._normalize_iteration(iteration)
+
+            evals = iteration.get("evaluation", {})
+            if "train" in evals:
+                train_accuracies.append(evals["train"].get("accuracy", 0.0))
+            if "test" in evals:
+                test_accuracies.append(evals["test"].get("accuracy", 0.0))
+
+        # Calculate improvement
+        initial_train = train_accuracies[0] if train_accuracies else 0.0
+        final_train = train_accuracies[-1] if train_accuracies else 0.0
+        train_improvement = final_train - initial_train
+
+        initial_test = test_accuracies[0] if test_accuracies else 0.0
+        final_test = test_accuracies[-1] if test_accuracies else 0.0
+        test_improvement = final_test - initial_test
+
+        # Build summary table
+        summary = f"""## Executive Summary
+
+### Key Results
+
+| Metric | Initial | Final | Improvement |
+|--------|---------|-------|-------------|
+| **Train Accuracy** | {initial_train:.2%} | {final_train:.2%} | {train_improvement:+.2%} |
+"""
+
+        if test_accuracies:
+            summary += f"| **Test Accuracy** | {initial_test:.2%} | {final_test:.2%} | {test_improvement:+.2%} |\n"
+
+        summary += f"| **Iterations** | - | {len(iterations)} | - |\n"
+
+        # Add ASCII chart of progress
+        summary += "\n### Progress Chart\n\n```\n"
+        summary += self._generate_ascii_chart(train_accuracies, "Train Accuracy")
+        summary += "```\n"
+
+        return summary
+
+    def _generate_ascii_chart(
+        self, values: List[float], title: str, width: int = 60, height: int = 10
+    ) -> str:
+        """Generate ASCII line chart."""
+        if not values:
+            return f"{title}: No data\n"
+
+        min_val = min(values)
+        max_val = max(values)
+        range_val = max_val - min_val if max_val > min_val else 1.0
+
+        chart = f"{title}\n"
+        chart += f"Max: {max_val:.2%}  Min: {min_val:.2%}\n\n"
+
+        # Generate chart rows (top to bottom)
+        for row in range(height):
+            threshold = max_val - (row / height) * range_val
+            line = ""
+
+            for i, val in enumerate(values):
+                if val >= threshold:
+                    line += "█"
+                else:
+                    line += " "
+
+            # Add Y-axis label
+            chart += f"{threshold:6.1%} |{line}\n"
+
+        # Add X-axis
+        chart += "       +" + "-" * len(values) + "\n"
+        chart += "        " + "".join(str(i % 10) for i in range(len(values))) + "\n"
+        chart += "        Iteration\n"
+
+        return chart
+
+    def _generate_visualizations(self, chart_paths: List[str]) -> str:
+        """Generate visualizations section with embedded images."""
+        if not chart_paths:
+            return "## Visualizations\n\nNo charts generated."
+
+        section = "## Visualizations\n\n"
+
+        for chart_path in chart_paths:
+            path = Path(chart_path)
+            if not path.exists():
+                continue
+
+            # Use relative path from results directory
+            rel_path = path.name if path.parent.name == "results" else str(path)
+
+            # Infer chart title from filename
+            title = path.stem.replace("_", " ").title()
+
+            section += f"### {title}\n\n"
+            section += f"![{title}]({rel_path})\n\n"
+
+        return section
+
+    def _generate_iteration_details(self, trajectory: Dict) -> str:
+        """Generate detailed iteration-by-iteration breakdown."""
+        iterations = trajectory.get("iterations", [])
+        if not iterations:
+            return "## Iteration Details\n\nNo iterations completed."
+
+        section = "## Iteration Details\n\n"
+
+        for idx, iteration in enumerate(iterations):
+            # Normalize to new format
+            iteration = self._normalize_iteration(iteration)
+
+            section += f"### Iteration {idx}\n\n"
+
+            # Metrics
+            evals = iteration.get("evaluation", {})
+            if "train" in evals:
+                train_acc = evals["train"].get("accuracy", 0.0)
+                train_total = evals["train"].get("total_cases", 0)
+                train_correct = evals["train"].get("correct", 0)
+
+                section += f"**Train Metrics:**\n"
+                section += f"- Accuracy: {train_acc:.2%} ({train_correct}/{train_total})\n"
+
+                # Show repeat measurements if available
+                if "repeat_measurements" in evals["train"]:
+                    repeats = evals["train"]["repeat_measurements"]
+                    if len(repeats) > 1:
+                        repeat_mean = mean(repeats)
+                        repeat_std = stdev(repeats)
+                        section += f"- Repeat measurements: {repeat_mean:.2%} ± {repeat_std:.2%}\n"
+
+            if "test" in evals:
+                test_acc = evals["test"].get("accuracy", 0.0)
+                test_total = evals["test"].get("total_cases", 0)
+                test_correct = evals["test"].get("correct", 0)
+
+                section += f"\n**Test Metrics:**\n"
+                section += f"- Accuracy: {test_acc:.2%} ({test_correct}/{test_total})\n"
+
+            # Failures (truncated)
+            section += self._format_failures(evals.get("train", {}))
+
+            # Configuration details - show ALL fields
+            config = iteration.get("configuration", iteration.get("config", {}))  # Backward compatible
+            section += f"\n**Configuration Fields:**\n"
+
+            if "nl2sql_prompt" in config:
+                prompt_preview = config["nl2sql_prompt"][:200].replace("\n", " ")
+                section += f"- **nl2sql_prompt**: `{prompt_preview}...` ({len(config['nl2sql_prompt'])} chars)\n"
+
+            if "schema_description" in config and config["schema_description"]:
+                schema_preview = str(config["schema_description"])[:150].replace("\n", " ")
+                section += f"- **schema_description**: `{schema_preview}...` ({len(str(config['schema_description']))} chars)\n"
+
+            if "nl2sql_examples" in config and config["nl2sql_examples"]:
+                num_examples = len(config["nl2sql_examples"])
+                section += f"- **nl2sql_examples**: {num_examples} examples provided\n"
+
+            if "nl2py_prompt" in config and config["nl2py_prompt"]:
+                section += f"- **nl2py_prompt**: Set ({len(str(config['nl2py_prompt']))} chars)\n"
+
+            if "allowed_tables" in config and config["allowed_tables"]:
+                section += f"- **allowed_tables**: {len(config['allowed_tables'])} tables whitelisted\n"
+
+            if "blocked_tables" in config and config["blocked_tables"]:
+                section += f"- **blocked_tables**: {len(config['blocked_tables'])} tables blocked\n"
+
+            # Prompt changes description
+            if iteration.get("prompt_changes"):
+                section += f"\n**Changes Made:** {iteration['prompt_changes']}\n"
+
+            section += "\n---\n\n"
+
+        return section
+
+    def _format_failures(self, eval_data: Dict, max_failures: int = 5) -> str:
+        """Format failure list with truncation."""
+        failures = eval_data.get("failures", [])
+        if not failures:
+            return "\n**Failures:** None\n"
+
+        section = f"\n**Failures:** {len(failures)} total\n\n"
+
+        for i, failure in enumerate(failures[:max_failures]):
+            question = failure.get("question", "Unknown")
+            error = failure.get("error", "Unknown error")
+
+            section += f"{i+1}. **Q:** {question}\n"
+            section += f"   **Error:** {error[:150]}\n"
+
+        if len(failures) > max_failures:
+            section += f"\n... and {len(failures) - max_failures} more failures (see appendix)\n"
+
+        return section
+
+    def _generate_configuration_evolution(self, trajectory: Dict) -> str:
+        """Generate configuration evolution table showing all config fields."""
+        iterations = trajectory.get("iterations", [])
+        if not iterations:
+            return "## Configuration Evolution\n\nNo configurations tracked."
+
+        section = "## Configuration Evolution\n\n"
+
+        # Expanded table with all config fields
+        section += "| Iter | Train | Test | Prompt | Schema | Examples | Py Prompt | Tables |\n"
+        section += "|------|-------|------|--------|--------|----------|-----------|--------|\n"
+
+        for idx, iteration in enumerate(iterations):
+            # Normalize to new format
+            iteration = self._normalize_iteration(iteration)
+
+            evals = iteration.get("evaluation", {})
+            config = iteration.get("configuration", iteration.get("config", {}))  # Backward compatible
+
+            train_acc = evals.get("train", {}).get("accuracy", 0.0)
+            test_acc = evals.get("test", {}).get("accuracy", 0.0)
+
+            # Config field summaries
+            prompt_len = len(config.get("nl2sql_prompt", ""))
+            schema_len = len(str(config.get("schema_description", ""))) if config.get("schema_description") else 0
+            num_examples = len(config.get("nl2sql_examples", []))
+            py_prompt_set = "Yes" if config.get("nl2py_prompt") else "No"
+
+            # Table access
+            allowed = len(config.get("allowed_tables", []))
+            blocked = len(config.get("blocked_tables", []))
+            tables_str = f"A:{allowed}/B:{blocked}" if (allowed or blocked) else "All"
+
+            section += (
+                f"| {idx} | {train_acc:.1%} | {test_acc:.1%} | "
+                f"{prompt_len}ch | {schema_len}ch | {num_examples}ex | "
+                f"{py_prompt_set} | {tables_str} |\n"
+            )
+
+        # Add legend
+        section += "\n**Legend:**\n"
+        section += "- Prompt/Schema: Character count\n"
+        section += "- Examples: Number of few-shot examples (ex)\n"
+        section += "- Py Prompt: Whether nl2py_prompt is set\n"
+        section += "- Tables: A=Allowed count, B=Blocked count\n"
+
+        return section
+
+    def _generate_recommendations(self, trajectory: Dict) -> str:
+        """Generate actionable recommendations based on results."""
+        iterations = trajectory.get("iterations", [])
+        if not iterations:
+            return "## Recommendations\n\nInsufficient data for recommendations."
+
+        section = "## Recommendations\n\n"
+
+        # Get final iteration metrics
+        final = self._normalize_iteration(iterations[-1])
+        final_train = final.get("evaluation", {}).get("train", {}).get("accuracy", 0.0)
+        final_test = final.get("evaluation", {}).get("test", {}).get("accuracy", 0.0)
+
+        # Analyze performance
+        if final_train >= 0.9:
+            section += "### ✅ Strong Performance\n\n"
+            section += f"The agent achieved {final_train:.2%} training accuracy. "
+            section += "Consider deploying this configuration to production.\n\n"
+        elif final_train >= 0.7:
+            section += "### ⚠️ Moderate Performance\n\n"
+            section += f"The agent achieved {final_train:.2%} training accuracy. "
+            section += "Consider additional iterations or manual prompt refinement.\n\n"
+        else:
+            section += "### ❌ Poor Performance\n\n"
+            section += f"The agent achieved only {final_train:.2%} training accuracy. "
+            section += "Significant prompt engineering or architectural changes needed.\n\n"
+
+        # Check for overfitting
+        if final_test > 0 and (final_train - final_test) > 0.15:
+            section += "### 🔍 Overfitting Detected\n\n"
+            section += f"Training accuracy ({final_train:.2%}) significantly exceeds "
+            section += f"test accuracy ({final_test:.2%}). Consider:\n"
+            section += "- Reducing prompt complexity\n"
+            section += "- Using more diverse training examples\n"
+            section += "- Adding regularization techniques\n\n"
+
+        # Check for improvement trend
+        train_accs = [
+            self._normalize_iteration(it).get("evaluation", {}).get("train", {}).get("accuracy", 0.0)
+            for it in iterations
+        ]
+        if len(train_accs) >= 2:
+            recent_improvement = train_accs[-1] - train_accs[-2]
+            if recent_improvement > 0.05:
+                section += "### 📈 Strong Improvement Trend\n\n"
+                section += f"Recent iteration showed +{recent_improvement:.2%} improvement. "
+                section += "Continue optimization with current strategy.\n\n"
+            elif abs(recent_improvement) < 0.01:
+                section += "### 📊 Plateau Detected\n\n"
+                section += "Minimal improvement in recent iterations. Consider:\n"
+                section += "- Trying different optimization strategies\n"
+                section += "- Adjusting learning parameters\n"
+                section += "- Manual inspection of failure cases\n\n"
+
+        # Failure analysis
+        final_failures = final.get("evaluation", {}).get("train", {}).get("failures", [])
+        if final_failures:
+            section += f"### 🔧 Address {len(final_failures)} Remaining Failures\n\n"
+            section += "Top failure categories to investigate:\n"
+
+            # Group failures by error type (simple heuristic)
+            error_types = {}
+            for failure in final_failures[:10]:
+                error = failure.get("error", "Unknown")
+                error_type = error[:50]  # First 50 chars as category
+                error_types[error_type] = error_types.get(error_type, 0) + 1
+
+            for error_type, count in sorted(
+                error_types.items(), key=lambda x: x[1], reverse=True
+            ):
+                section += f"- {count}x: `{error_type}...`\n"
+
+            section += "\n"
+
+        return section
+
+    def _generate_appendix(self, trajectory: Dict, agent_id: str) -> str:
+        """Generate appendix with raw data and reproduction commands."""
+        section = "## Appendix\n\n"
+
+        # Raw data reference
+        section += "### Raw Data\n\n"
+        section += "Complete trajectory history is available in:\n"
+        section += f"- `results/trajectory_history_{agent_id}.json`\n"
+        section += "- `results/iteration_*.json` (individual iteration files)\n\n"
+
+        # Reproduction commands
+        section += "### Reproduction Commands\n\n"
+        section += "To reproduce this optimization run:\n\n"
+        section += "```bash\n"
+        section += "# Set up environment\n"
+        section += "source .venv/bin/activate\n"
+        section += "export GOOGLE_CLOUD_PROJECT=your-project-id\n\n"
+
+        section += "# Run iterative optimization\n"
+        section += "python scripts/run_iterative_optimizer.py \\\n"
+        section += f"  --agent-id {agent_id} \\\n"
+        section += "  --train-set data/golden_set.json \\\n"
+        section += "  --test-set data/test_set.json \\\n"
+        section += "  --max-iterations 10 \\\n"
+        section += "  --repeat-measurements 3\n"
+        section += "```\n\n"
+
+        # Analysis commands
+        section += "### Analysis Commands\n\n"
+        section += "```bash\n"
+        section += "# View detailed iteration results\n"
+        section += "cat results/iteration_*.json | jq '.evaluation.train.accuracy'\n\n"
+
+        section += "# Extract all failure cases\n"
+        section += "cat results/trajectory_history_*.json | jq '.iterations[].evaluation.train.failures'\n\n"
+
+        section += "# Compare configurations\n"
+        section += "cat results/trajectory_history_*.json | jq '.iterations[].configuration.nl2sql_prompt'\n"
+        section += "```\n\n"
+
+        # Timestamp
+        section += "---\n\n"
+        section += f"*Report generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n"
+
+        return section
+
+
+def main():
+    """Test report generator with sample data."""
+    # Sample trajectory data
+    sample_trajectory = {
+        "iterations": [
+            {
+                "iteration": 0,
+                "configuration": {
+                    "nl2sql_prompt": "You are a SQL expert. Generate SQL queries...",
+                    "params": {"examples": []},
+                },
+                "evaluation": {
+                    "train": {
+                        "accuracy": 0.65,
+                        "correct": 13,
+                        "total_cases": 20,
+                        "failures": [
+                            {
+                                "question": "What is the total revenue?",
+                                "error": "SQL syntax error: missing FROM clause",
+                            }
+                        ],
+                    },
+                    "test": {"accuracy": 0.60, "correct": 6, "total_cases": 10},
+                },
+            },
+            {
+                "iteration": 1,
+                "configuration": {
+                    "nl2sql_prompt": "You are an expert SQL generator with schema awareness...",
+                    "params": {"examples": ["Example 1", "Example 2"]},
+                },
+                "evaluation": {
+                    "train": {
+                        "accuracy": 0.80,
+                        "correct": 16,
+                        "total_cases": 20,
+                        "failures": [],
+                    },
+                    "test": {"accuracy": 0.75, "correct": 7, "total_cases": 10},
+                },
+            },
+        ]
+    }
+
+    # Generate report
+    generator = OptimizationReportGenerator()
+    report_path = generator.generate_report(
+        trajectory_history=sample_trajectory,
+        chart_paths=["results/accuracy_chart.png"],
+        agent_id="test-agent-001",
+    )
+
+    print(f"Sample report generated: {report_path}")
+
+
+if __name__ == "__main__":
+    main()

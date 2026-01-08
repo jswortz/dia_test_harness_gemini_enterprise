@@ -222,42 +222,72 @@ class SingleAgentDeployer:
         # Agent doesn't exist - create it
         print(f"Agent not found. Creating new agent: {self.agent_display_name}")
 
-        # 2. Prepare prompt
+        # 2. Prepare configuration with all API fields
         nl2sql_prompt = config.get("nl2sql_prompt", "")
         params = config.get("params", {})
 
-        # Append schema context if present
-        if "schema_context" in params:
-            nl2sql_prompt += "\n\nSchema Context:\n" + params["schema_context"]
+        # Build nl_query_config with all available fields
+        nl_query_config = {
+            "nl2sqlPrompt": nl2sql_prompt
+        }
 
-        # Append examples if present
+        # Add schema description if present
+        if config.get("schema_description"):
+            nl_query_config["schemaDescription"] = config["schema_description"]
+
+        # Add Python prompt if present
+        if config.get("nl2py_prompt"):
+            nl_query_config["nl2pyPrompt"] = config["nl2py_prompt"]
+
+        # Add few-shot examples if present
+        if config.get("nl2sql_examples"):
+            nl_query_config["nl2sqlExamples"] = config["nl2sql_examples"]
+
+        # Legacy: Append schema context from params if present
+        if "schema_context" in params:
+            if "schemaDescription" in nl_query_config:
+                nl_query_config["schemaDescription"] += "\n\n" + params["schema_context"]
+            else:
+                nl_query_config["schemaDescription"] = params["schema_context"]
+
+        # Legacy: Append examples from params if present
         if "examples" in params and params["examples"]:
             examples_str = "\n".join(params["examples"])
-            nl2sql_prompt += f"\n\nExamples:\n{examples_str}"
+            nl_query_config["nl2sqlPrompt"] += f"\n\nExamples:\n{examples_str}"
 
         # 3. Create OAuth authorization
         auth_resource = self._create_authorization()
 
-        # 4. Create agent
+        # 4. Create agent with comprehensive configuration
         print(f"Creating agent '{self.agent_display_name}'...")
 
         payload = {
-            "displayName": self.agent_display_name,
+            "displayName": config.get("display_name", self.agent_display_name),
             "description": config.get("description", "Data Insights Agent for iterative optimization"),
             "managed_agent_definition": {
                 "tool_settings": {
-                    "tool_description": "Use this agent to query BigQuery data."
+                    "tool_description": config.get("tool_description", "Use this agent to query BigQuery data.")
                 },
                 "data_science_agent_config": {
                     "bq_project_id": self.project_id,
                     "bq_dataset_id": self.dataset_id,
-                    "nl_query_config": {
-                        "nl2sqlPrompt": nl2sql_prompt
-                    }
+                    "nl_query_config": nl_query_config
                 }
             }
         }
 
+        # Add icon if present
+        if config.get("icon_uri"):
+            payload["icon"] = {"uri": config["icon_uri"]}
+
+        # Add table access control if present
+        data_science_config = payload["managed_agent_definition"]["data_science_agent_config"]
+        if config.get("allowed_tables"):
+            data_science_config["allowedTables"] = config["allowed_tables"]
+        if config.get("blocked_tables"):
+            data_science_config["blockedTables"] = config["blocked_tables"]
+
+        # Add authorization config if OAuth resource created
         if auth_resource:
             payload["authorization_config"] = {
                 "tool_authorizations": [auth_resource]
@@ -301,15 +331,16 @@ class SingleAgentDeployer:
 
         return self.agent_id
 
-    def update_prompt(self, new_prompt: str, params: Dict[str, Any] = None) -> bool:
+    def update_prompt(self, new_prompt: str, params: Dict[str, Any] = None, full_config: Dict[str, Any] = None) -> bool:
         """
-        Update agent prompt using PATCH API.
+        Update agent configuration using PATCH API.
 
         Preserves OAuth authorization and agent state while updating configuration.
 
         Args:
             new_prompt: New NL2SQL prompt text
-            params: Optional params (schema_context, etc.)
+            params: Optional params (schema_context, etc.) - legacy support
+            full_config: Optional full configuration dict with all fields
 
         Returns:
             bool: True if update successful, False otherwise
@@ -317,13 +348,23 @@ class SingleAgentDeployer:
         if not self.agent_name:
             raise ValueError("Agent not deployed. Call deploy_initial() first.")
 
-        print(f"\nUpdating agent prompt via PATCH API...")
+        print(f"\nUpdating agent configuration via PATCH API...")
 
-        # Prepare nl_query_config
+        # Build nl_query_config with all fields
         nl_query_config = {
             "nl2sqlPrompt": new_prompt
         }
 
+        # If full_config provided, use all its fields
+        if full_config:
+            if full_config.get("schema_description"):
+                nl_query_config["schemaDescription"] = full_config["schema_description"]
+            if full_config.get("nl2py_prompt"):
+                nl_query_config["nl2pyPrompt"] = full_config["nl2py_prompt"]
+            if full_config.get("nl2sql_examples"):
+                nl_query_config["nl2sqlExamples"] = full_config["nl2sql_examples"]
+
+        # Legacy: support params dict
         if params and "schema_context" in params:
             nl_query_config["schemaDescription"] = params["schema_context"]
 
@@ -336,6 +377,14 @@ class SingleAgentDeployer:
                 }
             }
         }
+
+        # Add table access control if present in full_config
+        if full_config:
+            data_science_config = payload["managed_agent_definition"]["data_science_agent_config"]
+            if full_config.get("allowed_tables"):
+                data_science_config["allowedTables"] = full_config["allowed_tables"]
+            if full_config.get("blocked_tables"):
+                data_science_config["blockedTables"] = full_config["blocked_tables"]
 
         # PATCH with update mask
         update_mask = "managedAgentDefinition.dataScienceAgentConfig.nlQueryConfig"
@@ -381,6 +430,41 @@ class SingleAgentDeployer:
             return False
 
         return True
+
+    def find_existing_agent(self, display_name: str) -> Optional[str]:
+        """
+        Find an existing agent by display name (no deployment).
+
+        Args:
+            display_name: Display name to search for (e.g., "Data Agent - baseline")
+
+        Returns:
+            agent_id if found, None otherwise
+        """
+        print(f"Searching for existing agent: {display_name}")
+
+        agents_url = f"{self.base_url}/agents"
+        resp = requests.get(agents_url, headers=self._get_headers())
+
+        if resp.status_code != 200:
+            print(f"Failed to list agents: {resp.status_code} - {resp.text}")
+            return None
+
+        agents = resp.json().get("agents", [])
+        for agent in agents:
+            if agent.get("displayName") == display_name:
+                # Found matching agent
+                self.agent_name = agent["name"]
+                self.agent_id = self.agent_name.split("/")[-1]
+                self.agent_display_name = display_name
+                print(f"✓ Found existing agent: {display_name}")
+                print(f"  Agent ID: {self.agent_id}")
+                print(f"  Full Name: {self.agent_name}")
+                return self.agent_id
+
+        print(f"✗ Agent not found: {display_name}")
+        print(f"  Please run 'dia-harness deploy' first to create the agent.")
+        return None
 
     def get_agent_id(self) -> Optional[str]:
         """Get the deployed agent ID."""

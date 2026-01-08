@@ -151,7 +151,8 @@ The output should be a direct replacement for the current prompt.
     def present_suggestions_to_user(
         self,
         current_prompt: str,
-        suggested_prompt: str
+        suggested_prompt: str,
+        auto_accept: bool = False
     ) -> Tuple[str, str]:
         """
         Present suggested prompt to user and get their decision.
@@ -159,6 +160,7 @@ The output should be a direct replacement for the current prompt.
         Args:
             current_prompt: Current prompt text
             suggested_prompt: Suggested improved prompt
+            auto_accept: If True, automatically approve suggestions without user input
 
         Returns:
             Tuple of:
@@ -172,7 +174,14 @@ The output should be a direct replacement for the current prompt.
         # Show diff
         self._show_diff(current_prompt, suggested_prompt)
 
-        # Get user decision
+        # Auto-accept mode
+        if auto_accept:
+            print(f"\n{'='*80}")
+            print("AUTO-ACCEPT MODE: Automatically approving AI suggestions")
+            print(f"{'='*80}\n")
+            return suggested_prompt, "Auto-approved AI-suggested improvements to address failures"
+
+        # Manual approval mode
         print(f"\n{'='*80}")
         print("Options:")
         print("  [a] Approve - Use suggested prompt as-is")

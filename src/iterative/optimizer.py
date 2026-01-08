@@ -9,11 +9,12 @@ Coordinates:
 - User interaction for iteration control
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from .deployer import SingleAgentDeployer
 from .evaluator import SingleAgentEvaluator
 from .tracker import TrajectoryTracker
 from .prompt_improver import PromptImprover
+from .config_analyzer import ConfigFieldAnalyzer
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
@@ -47,37 +48,52 @@ class IterativeOptimizer:
         location: str,
         engine_id: str,
         dataset_id: str,
-        max_iterations: int = 10
+        max_iterations: int = 10,
+        num_repeats: int = 3,
+        test_set_path: Optional[str] = None,
+        auto_accept: bool = False
     ):
         """
         Initialize optimizer.
 
+        PREREQUISITE: Agent must already be deployed via 'dia-harness deploy' command.
+
         Args:
             config: Agent configuration (name, nl2sql_prompt, params, description)
-            golden_set_path: Path to golden set file (JSON/CSV/Excel)
+            golden_set_path: Path to golden set file (JSON/CSV/Excel) - training set
             project_id: Google Cloud project ID
             location: Location (e.g., "global")
             engine_id: Discovery Engine ID
             dataset_id: BigQuery dataset ID
             max_iterations: Maximum number of iterations (safety limit)
+            num_repeats: Number of times to repeat each test (default: 3)
+            test_set_path: Optional path to held-out test set (not used for optimization)
+            auto_accept: If True, automatically approve all improvements without user input
         """
         self.config = config
         self.golden_set_path = golden_set_path
+        self.test_set_path = test_set_path
         self.project_id = project_id
         self.location = location
         self.engine_id = engine_id
         self.dataset_id = dataset_id
         self.max_iterations = max_iterations
+        self.num_repeats = num_repeats
+        self.auto_accept = auto_accept
 
         # Initialize components (will be created after deployment)
         self.deployer: Optional[SingleAgentDeployer] = None
         self.evaluator: Optional[SingleAgentEvaluator] = None
+        self.test_evaluator: Optional[SingleAgentEvaluator] = None
         self.tracker: Optional[TrajectoryTracker] = None
         self.improver: Optional[PromptImprover] = None
+        self.config_analyzer: Optional[ConfigFieldAnalyzer] = None
 
         self.agent_id: Optional[str] = None
         self.current_prompt: str = ""
         self.current_params: Dict[str, Any] = {}
+        self.current_config: Dict[str, Any] = config.copy()
+        self.config_changes_description: str = ""  # Track all config changes
 
     def run(self):
         """
@@ -90,9 +106,14 @@ class IterativeOptimizer:
         - Suggest improvements
         - Ask to continue
         """
+        # Generate timestamp for this optimization run
+        from datetime import datetime
+        self.run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
         print(f"\n{'='*80}")
         print("ITERATIVE AGENT OPTIMIZATION")
         print(f"{'='*80}\n")
+        print(f"Run ID: {self.run_timestamp}")
         print(f"Config: {self.config.get('name', 'baseline')}")
         print(f"Golden Set: {self.golden_set_path}")
         print(f"Max Iterations: {self.max_iterations}\n")
@@ -108,16 +129,18 @@ class IterativeOptimizer:
             print(f"{'='*80}\n")
 
             try:
-                # Step 1: Deploy or update agent
+                # Step 1: Find existing agent (first iteration only)
                 if iteration == 1:
-                    self._deploy_initial()
-                else:
-                    # Agent already exists, PATCH will be done after user approves new prompt
-                    # which happens at the end of the previous iteration
-                    pass
+                    # Always find existing agent - deployment happens via 'deploy' command
+                    self._find_existing_agent()
 
-                # Step 2: Run evaluation
+                # Step 2: Run evaluation on training set
                 results, metrics, failures = self._run_evaluation()
+
+                # Step 2b: Run evaluation on test set (if provided)
+                test_results, test_metrics = None, None
+                if self.test_set_path:
+                    test_results, test_metrics, _ = self._run_test_evaluation()
 
                 # Step 3: Track in trajectory
                 prompt_changes = self._get_prompt_changes(iteration)
@@ -127,37 +150,59 @@ class IterativeOptimizer:
                     results=results,
                     metrics=metrics,
                     failures=failures,
-                    prompt_changes=prompt_changes
+                    prompt_changes=prompt_changes,
+                    test_results=test_results,
+                    test_metrics=test_metrics
                 )
                 self.tracker.save()
 
                 # Step 4: Display results with comparison
-                self._display_results(iteration, metrics, failures)
+                self._display_results(iteration, metrics, test_metrics, failures)
 
                 # Step 5: Check if perfect score
-                if metrics['accuracy'] >= 100.0:
+                current_accuracy = self._extract_accuracy(metrics)
+                if current_accuracy >= 100.0:
                     print(f"\n{'='*80}")
                     print("PERFECT SCORE ACHIEVED!")
                     print(f"{'='*80}\n")
                     print("All tests passed. Optimization complete.")
                     break
 
-                # Step 6: Analyze failures and suggest improvements
+                # Step 6: Analyze failures and suggest improvements to ALL config fields
                 if failures:
                     improved_prompt, change_description = self._improve_prompt(failures)
 
-                    if improved_prompt != self.current_prompt:
-                        # Update prompt for next iteration
-                        self.current_prompt = improved_prompt
-                        self.prompt_change_description = change_description
+                    # Check if ANY config field changed (not just prompt)
+                    config_changed = (
+                        improved_prompt != self.current_prompt or
+                        self.current_config.get("schema_description") != self.config.get("schema_description") or
+                        self.current_config.get("nl2sql_examples") != self.config.get("nl2sql_examples") or
+                        self.current_config.get("nl2py_prompt") != self.config.get("nl2py_prompt") or
+                        self.current_config.get("allowed_tables") != self.config.get("allowed_tables") or
+                        self.current_config.get("blocked_tables") != self.config.get("blocked_tables")
+                    )
 
-                        # PATCH agent with new prompt
-                        print("\nApplying prompt changes to agent...")
-                        success = self.deployer.update_prompt(improved_prompt, self.current_params)
+                    if config_changed:
+                        # Update all current state variables
+                        self.current_prompt = improved_prompt
+                        self.config_changes_description = change_description
+
+                        # PATCH agent with FULL configuration (all fields)
+                        print("\n📤 Deploying configuration changes to agent...")
+                        print(f"Changes: {change_description}")
+
+                        success = self.deployer.update_prompt(
+                            new_prompt=improved_prompt,
+                            params=self.current_params,
+                            full_config=self.current_config  # Pass complete config
+                        )
+
                         if not success:
-                            print("Warning: Failed to update agent. Will retry in next iteration.")
+                            print("⚠️  Warning: Failed to update agent. Will retry in next iteration.")
+                        else:
+                            print("✓ Configuration successfully deployed to agent")
                     else:
-                        print("\nNo prompt changes. Keeping current prompt.")
+                        print("\n✓ No configuration changes. Keeping current settings.")
 
                 # Step 7: Ask user to continue
                 if not self._ask_to_continue(iteration):
@@ -173,6 +218,9 @@ class IterativeOptimizer:
         # Final summary
         self._display_final_summary()
 
+        # Generate visualization and reports
+        self._generate_artifacts()
+
     def _initialize_components(self):
         """Initialize all components."""
         self.deployer = SingleAgentDeployer(
@@ -184,7 +232,7 @@ class IterativeOptimizer:
 
         self.tracker = TrajectoryTracker(
             agent_name=self.config.get("name", "baseline"),
-            output_path="results/trajectory_history.json"
+            timestamp=self.run_timestamp
         )
 
         # Initialize prompt improver lazily (when first failure occurs)
@@ -196,10 +244,34 @@ class IterativeOptimizer:
         self.current_params = self.config.get("params", {})
         self.prompt_change_description = "Initial configuration"
 
-    def _deploy_initial(self):
-        """Deploy agent for the first time."""
-        print("Deploying agent...")
-        self.agent_id = self.deployer.deploy_initial(self.config)
+    def _find_existing_agent(self):
+        """Find and use existing agent (must be pre-deployed via 'deploy' command)."""
+        print(f"\n{'='*80}")
+        print("FINDING EXISTING AGENT")
+        print(f"{'='*80}\n")
+
+        # Build expected display name from config
+        config_name = self.config.get("name", "baseline")
+        display_name = self.config.get("display_name", f"Data Agent - {config_name}")
+
+        # Search for existing agent WITHOUT deploying
+        self.agent_id = self.deployer.find_existing_agent(display_name)
+
+        if not self.agent_id:
+            # Agent not found - cannot proceed
+            print(f"\n{'='*80}")
+            print("❌ ERROR: Agent Not Found")
+            print(f"{'='*80}\n")
+            print(f"No agent found with display name: {display_name}\n")
+            print(f"REQUIRED SETUP:")
+            print(f"1. Deploy the agent first:")
+            print(f"   dia-harness deploy --config-file {self.config.get('name', 'baseline')}_config.json\n")
+            print(f"2. Authorize via Gemini Enterprise UI (one-time)\n")
+            print(f"3. Then run this optimize command again\n")
+            print(f"{'='*80}\n")
+            raise ValueError(f"Agent not found: {display_name}. Run 'dia-harness deploy' first.")
+
+        print(f"\n✓ Using existing agent: {self.agent_id}\n")
 
         # Create evaluator now that we have agent_id
         self.evaluator = SingleAgentEvaluator(
@@ -207,25 +279,102 @@ class IterativeOptimizer:
             project_id=self.project_id,
             location=self.location,
             engine_id=self.engine_id,
-            output_path=f"results/eval_iteration_1.jsonl"
+            output_path=f"results/eval_train_{self.run_timestamp}.jsonl",
+            timestamp=self.run_timestamp
         )
 
     def _run_evaluation(self) -> tuple:
-        """Run evaluation and return results, metrics, failures."""
-        return self.evaluator.evaluate(self.golden_set_path)
+        """Run evaluation with repeats and return results, metrics, failures."""
+        if self.num_repeats > 1:
+            return self.evaluator.evaluate_with_repeats(
+                self.golden_set_path,
+                num_repeats=self.num_repeats
+            )
+        else:
+            # Single measurement (backwards compatible)
+            return self.evaluator.evaluate(self.golden_set_path)
 
-    def _display_results(self, iteration: int, metrics: Dict[str, Any], failures: list):
+    def _run_test_evaluation(self) -> tuple:
+        """Run evaluation on held-out test set."""
+        print(f"\n{'─'*80}")
+        print("EVALUATING ON TEST SET (HELD-OUT)")
+        print(f"{'─'*80}\n")
+
+        if not self.test_evaluator:
+            self.test_evaluator = SingleAgentEvaluator(
+                agent_id=self.agent_id,
+                project_id=self.project_id,
+                location=self.location,
+                engine_id=self.engine_id,
+                output_path=f"results/eval_test_{self.run_timestamp}.jsonl",
+                timestamp=self.run_timestamp
+            )
+
+        if self.num_repeats > 1:
+            results, metrics, failures = self.test_evaluator.evaluate_with_repeats(
+                self.test_set_path,
+                num_repeats=self.num_repeats
+            )
+        else:
+            results, metrics, failures = self.test_evaluator.evaluate(self.test_set_path)
+
+        return results, metrics, failures
+
+    def _display_results(self, iteration: int, metrics: Dict[str, Any], test_metrics: Optional[Dict[str, Any]], failures: list):
         """Display results with comparison to previous iteration."""
         print(f"\n{'='*80}")
         print(f"ITERATION {iteration} RESULTS")
         print(f"{'='*80}\n")
 
-        print(f"Accuracy: {metrics['accuracy']}% ({metrics['total'] - metrics['failures']}/{metrics['total']} tests passed)")
-        print(f"  ✓ Exact match: {metrics['exact_match']}")
-        print(f"  ✓ Semantically equivalent: {metrics['semantically_equivalent']}")
-        print(f"  ✗ Failures: {metrics['failures']}")
-        if metrics['error_count'] > 0:
-            print(f"  ⚠ Errors: {metrics['error_count']}")
+        # Display training metrics
+        print("TRAINING SET:")
+        self._display_metrics_block(metrics)
+
+        # Display test metrics if available
+        if test_metrics:
+            print(f"\n{'─'*80}")
+            print("TEST SET (HELD-OUT):")
+            self._display_metrics_block(test_metrics)
+
+            # Check for overfitting
+            train_acc = self._extract_accuracy(metrics)
+            test_acc = self._extract_accuracy(test_metrics)
+            gap = train_acc - test_acc
+            if gap > 10:
+                print(f"\n⚠️  WARNING: Large train/test gap ({gap:.1f}%) suggests overfitting!")
+
+    def _display_metrics_block(self, metrics: Dict[str, Any]):
+        """Display a block of metrics (supports both single and repeat measurements)."""
+        # Check if this is aggregated metrics (from repeats)
+        if isinstance(metrics.get('accuracy'), dict):
+            # Repeat measurements
+            acc = metrics['accuracy']
+            print(f"  Accuracy: {acc['mean']:.2f}% ± {acc['std']:.2f}%")
+            print(f"    Range: {acc['min']:.2f}% - {acc['max']:.2f}%")
+            print(f"    Individual runs: {acc['values']}")
+
+            exact = metrics['exact_match']
+            print(f"  ✓ Exact match: {exact['mean']:.1f} ± {exact['std']:.1f}")
+
+            semantic = metrics['semantically_equivalent']
+            print(f"  ✓ Semantically equivalent: {semantic['mean']:.1f} ± {semantic['std']:.1f}")
+
+            fails = metrics['failures']
+            print(f"  ✗ Failures: {fails['mean']:.1f} ± {fails['std']:.1f}")
+        else:
+            # Single measurement
+            print(f"  Accuracy: {metrics['accuracy']:.2f}% ({metrics['total'] - metrics['failures']}/{metrics['total']} tests passed)")
+            print(f"  ✓ Exact match: {metrics['exact_match']}")
+            print(f"  ✓ Semantically equivalent: {metrics['semantically_equivalent']}")
+            print(f"  ✗ Failures: {metrics['failures']}")
+            if metrics.get('error_count', 0) > 0:
+                print(f"  ⚠ Errors: {metrics['error_count']}")
+
+    def _extract_accuracy(self, metrics: Dict[str, Any]) -> float:
+        """Extract accuracy value (handles both single and repeat measurements)."""
+        if isinstance(metrics.get('accuracy'), dict):
+            return metrics['accuracy']['mean']
+        return metrics.get('accuracy', 0.0)
 
         # Compare to previous iteration
         if iteration > 1:
@@ -258,51 +407,151 @@ class IterativeOptimizer:
                             print(f"    - {failure['question']}")
 
     def _improve_prompt(self, failures: list) -> tuple:
-        """Analyze failures and get improved prompt from user."""
+        """Analyze failures and improve all relevant configuration fields.
+
+        This method:
+        1. Uses ConfigFieldAnalyzer to determine which fields need improvement
+        2. Uses PromptImprover to generate improved values for those fields
+        3. Returns updated config and description of changes
+
+        Returns:
+            Tuple of (improved_prompt, change_description) for backward compatibility
+            Side effect: Updates self.current_config with all field changes
+        """
         print(f"\n{'='*80}")
-        print("PROMPT IMPROVEMENT")
+        print("CONFIGURATION ANALYSIS & IMPROVEMENT")
         print(f"{'='*80}\n")
 
-        # Create improver lazily if not already created
+        # Step 1: Initialize analyzers if needed
+        if not self.config_analyzer:
+            print("Initializing configuration field analyzer...")
+            self.config_analyzer = ConfigFieldAnalyzer(
+                project_id=self.project_id,
+                location=self.location
+            )
+
         if not self.improver:
-            print("Initializing AI prompt analyzer...")
-            self.improver = PromptImprover(project_id=self.project_id, location=self.location)
+            print("Initializing AI prompt improver...")
+            self.improver = PromptImprover(
+                project_id=self.project_id,
+                location=self.location
+            )
 
-        # Generate suggestions
-        suggested_prompt = self.improver.analyze_failures(failures, self.current_prompt)
-
-        # Present to user and get decision
-        improved_prompt, change_description = self.improver.present_suggestions_to_user(
-            current_prompt=self.current_prompt,
-            suggested_prompt=suggested_prompt
+        # Step 2: Analyze which config fields should be modified
+        print("\nAnalyzing configuration fields...")
+        recommendations = self.config_analyzer.analyze_config_improvements(
+            failures=failures,
+            current_config=self.current_config
         )
 
-        return improved_prompt, change_description
+        # Step 3: Display field recommendations
+        field_recs = recommendations.get("field_recommendations", {})
+        fields_to_modify = [
+            field for field, rec in field_recs.items()
+            if rec.get("should_modify", False)
+        ]
+
+        if not fields_to_modify:
+            print("\n✓ No configuration changes recommended")
+            return self.current_prompt, "No changes recommended"
+
+        print(f"\n📋 Recommended Configuration Changes ({len(fields_to_modify)} fields):\n")
+
+        # Sort by priority (highest first)
+        sorted_fields = sorted(
+            fields_to_modify,
+            key=lambda f: field_recs[f].get("priority", 1),
+            reverse=True
+        )
+
+        for field in sorted_fields:
+            rec = field_recs[field]
+            priority = rec.get("priority", 1)
+            rationale = rec.get("rationale", "No rationale")
+            priority_label = "🔴 CRITICAL" if priority >= 4 else "🟡 MEDIUM" if priority >= 3 else "🟢 LOW"
+            print(f"{priority_label} {field}:")
+            print(f"  Reason: {rationale[:150]}{'...' if len(rationale) > 150 else ''}\n")
+
+        # Step 4: Improve high-priority fields using AI
+        improved_config = self.current_config.copy()
+        change_descriptions = []
+
+        # Focus on nl2sql_prompt with PromptImprover (backward compatible)
+        if "nl2sql_prompt" in fields_to_modify:
+            print("\n--- Improving nl2sql_prompt ---")
+            suggested_prompt = self.improver.analyze_failures(failures, self.current_prompt)
+            improved_prompt, prompt_change_desc = self.improver.present_suggestions_to_user(
+                current_prompt=self.current_prompt,
+                suggested_prompt=suggested_prompt,
+                auto_accept=self.auto_accept
+            )
+
+            if improved_prompt != self.current_prompt:
+                improved_config["nl2sql_prompt"] = improved_prompt
+                change_descriptions.append(f"nl2sql_prompt: {prompt_change_desc}")
+
+        # Apply AI suggestions for other fields (if should_modify and has suggested_value)
+        for field in sorted_fields:
+            if field == "nl2sql_prompt":
+                continue  # Already handled above
+
+            rec = field_recs[field]
+            suggested_value = rec.get("suggested_value", "")
+
+            if suggested_value and rec.get("priority", 1) >= 3:  # Only apply medium+ priority
+                if self.auto_accept:
+                    # Auto-apply in auto-accept mode
+                    improved_config[field] = suggested_value
+                    change_descriptions.append(
+                        f"{field}: {rec.get('rationale', 'Updated')[:100]}"
+                    )
+                    print(f"\n✓ Auto-applied: {field}")
+                else:
+                    # Ask user to review
+                    print(f"\n--- Suggested change for {field} ---")
+                    print(f"Rationale: {rec.get('rationale', 'No rationale')}")
+                    print(f"\nSuggested value (first 500 chars):")
+                    print(f"{str(suggested_value)[:500]}...")
+                    choice = input(f"\nApply this change? (y/n): ").strip().lower()
+                    if choice == 'y':
+                        improved_config[field] = suggested_value
+                        change_descriptions.append(
+                            f"{field}: {rec.get('rationale', 'Updated')[:100]}"
+                        )
+                        print(f"✓ Applied: {field}")
+
+        # Step 5: Update current config and return
+        self.current_config = improved_config
+        full_change_desc = "; ".join(change_descriptions) if change_descriptions else "No changes applied"
+
+        # Return prompt for backward compatibility
+        return improved_config.get("nl2sql_prompt", self.current_prompt), full_change_desc
 
     def _ask_to_continue(self, iteration: int) -> bool:
-        """Ask user if they want to run another iteration."""
+        """Ask user if they want to run another iteration (or auto-continue in auto-accept mode)."""
         if iteration >= self.max_iterations:
             print(f"\nMaximum iterations ({self.max_iterations}) reached.")
             return False
+
+        if self.auto_accept:
+            print(f"\n{'='*80}")
+            print("AUTO-ACCEPT MODE: Continuing to next iteration automatically")
+            print(f"{'='*80}\n")
+            return True
 
         print(f"\n{'='*80}")
         choice = input(f"Run another iteration? (y/n): ").strip().lower()
         return choice == 'y'
 
     def _get_current_config(self) -> Dict[str, Any]:
-        """Get current agent configuration."""
-        return {
-            "name": self.config.get("name", "baseline"),
-            "nl2sql_prompt": self.current_prompt,
-            "params": self.current_params,
-            "description": self.config.get("description", "")
-        }
+        """Get current agent configuration with all fields."""
+        return self.current_config.copy()
 
     def _get_prompt_changes(self, iteration: int) -> str:
-        """Get description of prompt changes for this iteration."""
+        """Get description of configuration changes for this iteration."""
         if iteration == 1:
             return "Initial configuration"
-        return self.prompt_change_description
+        return self.config_changes_description if hasattr(self, 'config_changes_description') else self.prompt_change_description
 
     def _handle_authorization_error(self, error: AgentAuthorizationError):
         """
@@ -370,3 +619,49 @@ class IterativeOptimizer:
 
         print(f"\nTrajectory saved to: results/trajectory_history.json")
         print(f"Agent ID: {self.agent_id}")
+
+    def _generate_artifacts(self):
+        """Generate visualization charts and comprehensive report."""
+        print(f"\n{'='*80}")
+        print("GENERATING ARTIFACTS")
+        print(f"{'='*80}\n")
+
+        try:
+            # Import visualizer and report generator
+            from .visualizer import TrajectoryVisualizer
+            from .report_generator import OptimizationReportGenerator
+
+            # Generate charts
+            print("Generating visualization charts...")
+            visualizer = TrajectoryVisualizer(
+                trajectory_data=self.tracker.history,
+                output_dir="results/charts"
+            )
+            chart_paths = visualizer.generate_all_charts()
+
+            print("\nCharts generated:")
+            for path in chart_paths:
+                if path:
+                    print(f"  ✓ {path}")
+
+            # Generate comprehensive report
+            print("\nGenerating comprehensive markdown report...")
+            report_gen = OptimizationReportGenerator(output_dir="results")
+            report_path = report_gen.generate_report(
+                trajectory_history=self.tracker.history,
+                chart_paths=chart_paths,
+                agent_id=self.agent_id
+            )
+
+            print(f"\n{'='*80}")
+            print(f"📊 Full optimization report: {report_path}")
+            print(f"📈 Charts directory: results/charts/")
+            print(f"{'='*80}\n")
+
+        except ImportError as e:
+            print(f"Warning: Could not generate artifacts: {e}")
+            print("Charts and reports require matplotlib and seaborn.")
+            print("Install with: uv pip install matplotlib seaborn")
+        except Exception as e:
+            print(f"Warning: Error generating artifacts: {e}")
+            print("Continuing without visualization...")

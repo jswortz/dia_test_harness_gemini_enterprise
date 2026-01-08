@@ -107,67 +107,68 @@ class IterativeOptimizer:
             print(f"ITERATION {iteration}")
             print(f"{'='*80}\n")
 
-            # Step 1: Deploy or update agent
-            if iteration == 1:
-                self._deploy_initial()
-            else:
-                # Agent already exists, PATCH will be done after user approves new prompt
-                # which happens at the end of the previous iteration
-                pass
-
-            # Step 2: Run evaluation
             try:
+                # Step 1: Deploy or update agent
+                if iteration == 1:
+                    self._deploy_initial()
+                else:
+                    # Agent already exists, PATCH will be done after user approves new prompt
+                    # which happens at the end of the previous iteration
+                    pass
+
+                # Step 2: Run evaluation
                 results, metrics, failures = self._run_evaluation()
+
+                # Step 3: Track in trajectory
+                prompt_changes = self._get_prompt_changes(iteration)
+                self.tracker.add_iteration(
+                    iteration_num=iteration,
+                    config=self._get_current_config(),
+                    results=results,
+                    metrics=metrics,
+                    failures=failures,
+                    prompt_changes=prompt_changes
+                )
+                self.tracker.save()
+
+                # Step 4: Display results with comparison
+                self._display_results(iteration, metrics, failures)
+
+                # Step 5: Check if perfect score
+                if metrics['accuracy'] >= 100.0:
+                    print(f"\n{'='*80}")
+                    print("PERFECT SCORE ACHIEVED!")
+                    print(f"{'='*80}\n")
+                    print("All tests passed. Optimization complete.")
+                    break
+
+                # Step 6: Analyze failures and suggest improvements
+                if failures:
+                    improved_prompt, change_description = self._improve_prompt(failures)
+
+                    if improved_prompt != self.current_prompt:
+                        # Update prompt for next iteration
+                        self.current_prompt = improved_prompt
+                        self.prompt_change_description = change_description
+
+                        # PATCH agent with new prompt
+                        print("\nApplying prompt changes to agent...")
+                        success = self.deployer.update_prompt(improved_prompt, self.current_params)
+                        if not success:
+                            print("Warning: Failed to update agent. Will retry in next iteration.")
+                    else:
+                        print("\nNo prompt changes. Keeping current prompt.")
+
+                # Step 7: Ask user to continue
+                if not self._ask_to_continue(iteration):
+                    break
+
+                iteration += 1
+
             except AgentAuthorizationError as e:
-                # Agent requires OAuth authorization
+                # Agent requires OAuth authorization - stop optimization immediately
                 self._handle_authorization_error(e)
                 return  # Exit optimization loop
-
-            # Step 3: Track in trajectory
-            prompt_changes = self._get_prompt_changes(iteration)
-            self.tracker.add_iteration(
-                iteration_num=iteration,
-                config=self._get_current_config(),
-                results=results,
-                metrics=metrics,
-                failures=failures,
-                prompt_changes=prompt_changes
-            )
-            self.tracker.save()
-
-            # Step 4: Display results with comparison
-            self._display_results(iteration, metrics, failures)
-
-            # Step 5: Check if perfect score
-            if metrics['accuracy'] >= 100.0:
-                print(f"\n{'='*80}")
-                print("PERFECT SCORE ACHIEVED!")
-                print(f"{'='*80}\n")
-                print("All tests passed. Optimization complete.")
-                break
-
-            # Step 6: Analyze failures and suggest improvements
-            if failures:
-                improved_prompt, change_description = self._improve_prompt(failures)
-
-                if improved_prompt != self.current_prompt:
-                    # Update prompt for next iteration
-                    self.current_prompt = improved_prompt
-                    self.prompt_change_description = change_description
-
-                    # PATCH agent with new prompt
-                    print("\nApplying prompt changes to agent...")
-                    success = self.deployer.update_prompt(improved_prompt, self.current_params)
-                    if not success:
-                        print("Warning: Failed to update agent. Will retry in next iteration.")
-                else:
-                    print("\nNo prompt changes. Keeping current prompt.")
-
-            # Step 7: Ask user to continue
-            if not self._ask_to_continue(iteration):
-                break
-
-            iteration += 1
 
         # Final summary
         self._display_final_summary()

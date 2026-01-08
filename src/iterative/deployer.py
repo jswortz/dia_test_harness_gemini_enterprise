@@ -143,20 +143,40 @@ class SingleAgentDeployer:
 
         print(f"Waiting for LRO: {operation_name.split('/')[-1]}...")
 
+        checks = 0
         while time.time() - start_time < timeout:
             resp = requests.get(url, headers=self._get_headers())
             if resp.status_code != 200:
-                print(f"LRO check failed: {resp.status_code}")
+                print(f"LRO check failed: {resp.status_code} - {resp.text}")
                 return
 
             data = resp.json()
-            if data.get("done", False):
-                print("LRO completed successfully.")
+
+            # Check for errors in the LRO
+            if "error" in data:
+                print(f"LRO failed with error: {data['error']}")
                 return
+
+            if data.get("done", False):
+                # Check if there's a result or error in the response
+                if "error" in data:
+                    print(f"LRO completed with error: {data['error']}")
+                elif "response" in data:
+                    print("LRO completed successfully.")
+                else:
+                    print("LRO completed.")
+                return
+
+            checks += 1
+            # Print progress every 30 seconds (6 checks)
+            if checks % 6 == 0:
+                elapsed = int(time.time() - start_time)
+                print(f"  Still waiting... ({elapsed}s elapsed)")
 
             time.sleep(5)
 
         print(f"LRO timed out after {timeout}s")
+        print("The operation may still be processing. Check agent status manually.")
 
     def deploy_initial(self, config: Dict[str, Any]) -> str:
         """
@@ -262,11 +282,18 @@ class SingleAgentDeployer:
         deploy_resp = requests.post(deploy_url, headers=self._get_headers(), json={"name": self.agent_name})
 
         if deploy_resp.status_code == 200:
-            lro = deploy_resp.json()
-            operation_name = lro.get('name')
-            print(f"Deployment LRO started: {operation_name}")
-            # Wait for deployment to complete before using agent
-            self._wait_for_lro(operation_name)
+            resp_data = deploy_resp.json()
+
+            # Check if response contains an LRO operation
+            if 'name' in resp_data and 'operations' in resp_data['name']:
+                operation_name = resp_data['name']
+                print(f"Deployment LRO started: {operation_name}")
+                # Wait for deployment to complete before using agent
+                self._wait_for_lro(operation_name)
+                print("Agent deployed and ready!")
+            else:
+                # Direct success response (no LRO needed)
+                print("Agent deployed successfully (no LRO wait needed).")
         elif deploy_resp.status_code == 400 and "Invalid agent state for deploy: ENABLED" in deploy_resp.text:
             print("Agent already enabled.")
         else:
@@ -326,6 +353,32 @@ class SingleAgentDeployer:
         data = resp.json()
         if "name" in data and "operations" in data["name"]:
             self._wait_for_lro(data["name"])
+
+        # Deploy the agent to enable it after configuration update
+        print("\nDeploying updated agent...")
+        deploy_url = f"https://{self.host}/v1alpha/{self.agent_name}:deploy"
+        deploy_payload = {"name": self.agent_name}
+
+        deploy_resp = requests.post(deploy_url, headers=self._get_headers(), json=deploy_payload)
+
+        if deploy_resp.status_code == 200:
+            resp_data = deploy_resp.json()
+
+            # Check if response contains an LRO operation
+            if 'name' in resp_data and 'operations' in resp_data['name']:
+                operation_name = resp_data['name']
+                print(f"Deployment LRO started: {operation_name}")
+                # Wait for deployment to complete before using agent
+                self._wait_for_lro(operation_name)
+                print("Agent deployed and ready for queries!")
+            else:
+                # Direct success response (no LRO needed)
+                print("Agent deployed successfully (no LRO wait needed).")
+        elif deploy_resp.status_code == 400 and "Invalid agent state for deploy: ENABLED" in deploy_resp.text:
+            print("Agent already enabled.")
+        else:
+            print(f"Warning: Deploy request returned {deploy_resp.status_code} - {deploy_resp.text}")
+            return False
 
         return True
 

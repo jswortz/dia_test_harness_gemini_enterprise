@@ -111,28 +111,110 @@ class TestRunner:
                 return chunk["sessionInfo"]["session"]
         return None
 
+    def run_single_test(self, test_case: Dict, session_id: str = None) -> Dict:
+        """
+        Run a single test case with specified session (for parallel execution).
+
+        Args:
+            test_case: Dict with 'nl_question', 'expected_sql', 'question_id'
+            session_id: Optional session ID (creates new session if None)
+
+        Returns:
+            Dict with test result including SQL, match status, explanation, etc.
+        """
+        question = test_case["nl_question"]
+        expected_sql = test_case["expected_sql"]
+        question_id = test_case.get("question_id")
+
+        start_time = time.time()
+        try:
+            # Create session if not provided
+            if not session_id:
+                session_id = self.client.create_session()
+
+            # 1. Query Agent (First Query)
+            raw_response_1 = self.client.query_agent(question, session_id=session_id)
+            parsed_1 = self.parse_response(raw_response_1)
+
+            # Capture thoughts and response from the actual answer
+            thoughts = parsed_1["thoughts"]
+            agent_response = parsed_1["response"]
+            generated_sql = parsed_1["generated_sql"]
+
+            # 2. Follow-up for SQL
+            raw_response_2 = self.client.query_agent(
+                "what was the sql query used for the previous answer?",
+                session_id=session_id
+            )
+            parsed_2 = self.parse_response(raw_response_2)
+
+            if parsed_2["generated_sql"]:
+                generated_sql = parsed_2["generated_sql"]
+
+            # 3. Compare
+            is_match = self.comparator.compare(generated_sql, expected_sql)
+
+            explanation = None
+            if not is_match:
+                explanation = self.judge.explain_difference(
+                    question,
+                    generated_sql,
+                    expected_sql,
+                    thoughts=thoughts,
+                    agent_response=agent_response
+                )
+
+            latency = time.time() - start_time
+
+            result = {
+                "question_id": question_id,
+                "question": question,
+                "expected_sql": expected_sql,
+                "generated_sql": generated_sql,
+                "thoughts": thoughts,
+                "agent_response": agent_response,
+                "is_match": is_match,
+                "explanation": explanation,
+                "latency": latency,
+                "timestamp": datetime.utcnow().isoformat(),
+                "raw_response": str(raw_response_1)[:1000]
+            }
+            return result
+
+        except AgentAuthorizationError:
+            # Re-raise authorization errors immediately
+            raise
+        except Exception as e:
+            logging.error(f"Error processing {question}: {e}")
+            return {
+                "question_id": question_id,
+                "question": question,
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
     def run(self, input_path: str):
         """Runs the test against the golden set."""
         data = self.loader.load(input_path)
-        
+
         print(f"Starting test run with {len(data)} items...")
-        
+
         for item in data:
             question = item["nl_question"]
             expected_sql = item["expected_sql"]
             question_id = item.get("question_id")
-            
+
             print(f"Processing: {question}")
-            
+
             start_time = time.time()
             try:
                 # 1. Query Agent (First Valid Query)
                 print("  Sending initial query...")
                 raw_response_1 = self.client.query_agent(question)
                 parsed_1 = self.parse_response(raw_response_1)
-                
+
                 session_id = self._extract_session_id(raw_response_1)
-                
+
                 # Capture thoughts and response from the actual answer
                 thoughts = parsed_1["thoughts"]
                 agent_response = parsed_1["response"]
@@ -146,7 +228,7 @@ class TestRunner:
                      print(f"  Follow-up for SQL (Session: {session_id.split('/')[-1]})...")
                      raw_response_2 = self.client.query_agent("what was the sql query used for the previous answer?", session_id=session_id)
                      parsed_2 = self.parse_response(raw_response_2)
-                     
+
                      if parsed_2["generated_sql"]:
                          generated_sql = parsed_2["generated_sql"]
                          print("  SQL found in follow-up.")
@@ -161,20 +243,20 @@ class TestRunner:
 
                 # 3. Compare
                 is_match = self.comparator.compare(generated_sql, expected_sql)
-                
+
                 explanation = None
                 if not is_match:
                     print("  Mismatch detected. Asking for judgement...")
                     explanation = self.judge.explain_difference(
-                        question, 
-                        generated_sql, 
-                        expected_sql, 
-                        thoughts=thoughts, 
+                        question,
+                        generated_sql,
+                        expected_sql,
+                        thoughts=thoughts,
                         agent_response=agent_response
                     )
-                
+
                 latency = time.time() - start_time
-                
+
                 result = {
                     "question_id": question_id,
                     "question": question,

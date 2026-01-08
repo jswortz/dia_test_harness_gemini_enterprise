@@ -66,6 +66,9 @@ class TrajectoryTracker:
         metrics: Dict[str, Any],
         failures: List[Dict],
         prompt_changes: str = "",
+        suggested_config: Optional[Dict[str, Any]] = None,
+        config_approved: bool = True,
+        deployment_success: bool = True,
         test_results: Optional[List[Dict]] = None,
         test_metrics: Optional[Dict[str, Any]] = None
     ):
@@ -79,6 +82,9 @@ class TrajectoryTracker:
             metrics: Calculated metrics from training set (accuracy, exact_match, etc.)
             failures: List of failed test cases with details
             prompt_changes: Description of what changed in the prompt
+            suggested_config: AI-suggested configuration (before user approval)
+            config_approved: Whether user approved the suggested config (or auto-accepted)
+            deployment_success: Whether deployment to agent succeeded
             test_results: Optional results from held-out test set
             test_metrics: Optional metrics from held-out test set
         """
@@ -95,7 +101,10 @@ class TrajectoryTracker:
         iteration_record = {
             "iteration": iteration_num,
             "timestamp": datetime.utcnow().isoformat(),
-            "configuration": config,  # Changed from "config" to match report_generator
+            "configuration": config,  # Final applied configuration
+            "suggested_configuration": suggested_config,  # AI suggestion (before approval)
+            "config_approved": config_approved,  # Whether user approved
+            "deployment_success": deployment_success,  # Whether deployment worked
             "evaluation": evaluation,
             "prompt_changes": prompt_changes,
             # Keep raw data for backward compatibility and detailed analysis

@@ -235,8 +235,9 @@ def deploy(config_file):
 @click.option('--test-set', type=click.Path(exists=True), default=None, help='Optional path to held-out test set')
 @click.option('--max-iterations', default=10, help='Maximum number of optimization iterations')
 @click.option('--num-repeats', default=3, help='Number of times to repeat each test (default: 3)')
+@click.option('--max-workers', default=10, help='Maximum number of parallel workers for test execution (default: 10)')
 @click.option('--auto-accept', is_flag=True, help='Automatically approve all AI-suggested improvements')
-def optimize(config_file, golden_set, test_set, max_iterations, num_repeats, auto_accept):
+def optimize(config_file, golden_set, test_set, max_iterations, num_repeats, max_workers, auto_accept):
     """
     Run iterative optimization for a single agent.
 
@@ -319,6 +320,7 @@ def optimize(config_file, golden_set, test_set, max_iterations, num_repeats, aut
         logger.info(f"  Test Set: {test_set}")
     logger.info(f"  Max Iterations: {max_iterations}")
     logger.info(f"  Repeat Measurements: {num_repeats}")
+    logger.info(f"  Max Workers: {max_workers}")
     logger.info(f"  Auto-Accept: {auto_accept}")
 
     # Initialize and run optimizer (always uses existing agent)
@@ -332,6 +334,7 @@ def optimize(config_file, golden_set, test_set, max_iterations, num_repeats, aut
         dataset_id=dataset_id,
         max_iterations=max_iterations,
         num_repeats=num_repeats,
+        max_workers=max_workers,
         auto_accept=auto_accept
     )
 

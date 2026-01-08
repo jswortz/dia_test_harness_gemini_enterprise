@@ -10,6 +10,8 @@ Coordinates:
 """
 
 from typing import Dict, Any, Optional, List
+from pathlib import Path
+import json
 from .deployer import SingleAgentDeployer
 from .evaluator import SingleAgentEvaluator
 from .tracker import TrajectoryTracker
@@ -50,6 +52,7 @@ class IterativeOptimizer:
         dataset_id: str,
         max_iterations: int = 10,
         num_repeats: int = 3,
+        max_workers: int = 10,
         test_set_path: Optional[str] = None,
         auto_accept: bool = False
     ):
@@ -67,6 +70,7 @@ class IterativeOptimizer:
             dataset_id: BigQuery dataset ID
             max_iterations: Maximum number of iterations (safety limit)
             num_repeats: Number of times to repeat each test (default: 3)
+            max_workers: Maximum number of parallel workers for test execution (default: 10)
             test_set_path: Optional path to held-out test set (not used for optimization)
             auto_accept: If True, automatically approve all improvements without user input
         """
@@ -79,6 +83,7 @@ class IterativeOptimizer:
         self.dataset_id = dataset_id
         self.max_iterations = max_iterations
         self.num_repeats = num_repeats
+        self.max_workers = max_workers
         self.auto_accept = auto_accept
 
         # Initialize components (will be created after deployment)
@@ -142,19 +147,12 @@ class IterativeOptimizer:
                 if self.test_set_path:
                     test_results, test_metrics, _ = self._run_test_evaluation()
 
-                # Step 3: Track in trajectory
+                # Step 3: Initialize tracking variables for this iteration
+                suggested_config = None
+                config_approved = True
+                deployment_success = True
                 prompt_changes = self._get_prompt_changes(iteration)
-                self.tracker.add_iteration(
-                    iteration_num=iteration,
-                    config=self._get_current_config(),
-                    results=results,
-                    metrics=metrics,
-                    failures=failures,
-                    prompt_changes=prompt_changes,
-                    test_results=test_results,
-                    test_metrics=test_metrics
-                )
-                self.tracker.save()
+                iteration_tracked = False  # Track if we've already saved this iteration
 
                 # Step 4: Display results with comparison
                 self._display_results(iteration, metrics, test_metrics, failures)
@@ -170,7 +168,12 @@ class IterativeOptimizer:
 
                 # Step 6: Analyze failures and suggest improvements to ALL config fields
                 if failures:
+                    # Get improved config from _improve_prompt
                     improved_prompt, change_description = self._improve_prompt(failures)
+
+                    # Store suggested config (BEFORE applying changes)
+                    suggested_config = self.current_config.copy()
+                    suggested_config["nl2sql_prompt"] = improved_prompt
 
                     # Check if ANY config field changed (not just prompt)
                     config_changed = (
@@ -183,6 +186,9 @@ class IterativeOptimizer:
                     )
 
                     if config_changed:
+                        # Save suggested config snapshot
+                        self._save_config_snapshot(iteration, suggested_config, config_type="suggested")
+
                         # Update all current state variables
                         self.current_prompt = improved_prompt
                         self.config_changes_description = change_description
@@ -197,14 +203,77 @@ class IterativeOptimizer:
                             full_config=self.current_config  # Pass complete config
                         )
 
+                        deployment_success = success
+
                         if not success:
-                            print("⚠️  Warning: Failed to update agent. Will retry in next iteration.")
+                            # Deployment failed after retries
+                            error_msg = "❌ CRITICAL: Failed to update agent after 3 retry attempts."
+                            print(f"\n{'='*80}")
+                            print(error_msg)
+                            print(f"{'='*80}\n")
+
+                            # Track failure immediately
+                            self.tracker.add_iteration(
+                                iteration_num=iteration,
+                                config=self._get_current_config(),
+                                results=results,
+                                metrics=metrics,
+                                failures=failures,
+                                prompt_changes=prompt_changes,
+                                suggested_config=suggested_config,
+                                config_approved=config_approved,
+                                deployment_success=False,
+                                test_results=test_results,
+                                test_metrics=test_metrics
+                            )
+                            self.tracker.save()
+                            iteration_tracked = True  # Mark as tracked
+
+                            if self.auto_accept:
+                                # Fail fast in auto-accept mode
+                                print("Auto-accept mode: Cannot continue with deployment failures.")
+                                print("Please check agent logs and retry manually.\n")
+                                raise RuntimeError("Agent deployment failed in auto-accept mode")
+                            else:
+                                # Ask user what to do
+                                print("Options:")
+                                print("  1. Continue with old configuration (not recommended)")
+                                print("  2. Stop optimization and investigate")
+                                choice = input("\nContinue with old config? (y/n): ").strip().lower()
+                                if choice != 'y':
+                                    print("Stopping optimization due to deployment failure.")
+                                    break
                         else:
                             print("✓ Configuration successfully deployed to agent")
+
+                        # Save final config snapshot
+                        self._save_config_snapshot(iteration, self.current_config, config_type="final")
                     else:
                         print("\n✓ No configuration changes. Keeping current settings.")
+                        # Still save config snapshot for iteration tracking
+                        self._save_config_snapshot(iteration, self.current_config, config_type="final")
+                else:
+                    # No failures - save current config
+                    self._save_config_snapshot(iteration, self.current_config, config_type="final")
 
-                # Step 7: Ask user to continue
+                # Step 7: Track iteration with ALL metadata (if not already tracked)
+                if not iteration_tracked:
+                    self.tracker.add_iteration(
+                        iteration_num=iteration,
+                        config=self._get_current_config(),
+                        results=results,
+                        metrics=metrics,
+                        failures=failures,
+                        prompt_changes=prompt_changes,
+                        suggested_config=suggested_config,
+                        config_approved=config_approved,  # Always True for now (user accepted or auto-accepted)
+                        deployment_success=deployment_success,
+                        test_results=test_results,
+                        test_metrics=test_metrics
+                    )
+                    self.tracker.save()
+
+                # Step 8: Ask user to continue
                 if not self._ask_to_continue(iteration):
                     break
 
@@ -280,7 +349,8 @@ class IterativeOptimizer:
             location=self.location,
             engine_id=self.engine_id,
             output_path=f"results/eval_train_{self.run_timestamp}.jsonl",
-            timestamp=self.run_timestamp
+            timestamp=self.run_timestamp,
+            max_workers=self.max_workers
         )
 
     def _run_evaluation(self) -> tuple:
@@ -307,7 +377,8 @@ class IterativeOptimizer:
                 location=self.location,
                 engine_id=self.engine_id,
                 output_path=f"results/eval_test_{self.run_timestamp}.jsonl",
-                timestamp=self.run_timestamp
+                timestamp=self.run_timestamp,
+                max_workers=self.max_workers
             )
 
         if self.num_repeats > 1:
@@ -552,6 +623,24 @@ class IterativeOptimizer:
         if iteration == 1:
             return "Initial configuration"
         return self.config_changes_description if hasattr(self, 'config_changes_description') else self.prompt_change_description
+
+    def _save_config_snapshot(self, iteration: int, config: Dict[str, Any], config_type: str = "final"):
+        """
+        Save configuration to separate file for version control.
+
+        Args:
+            iteration: Iteration number
+            config: Configuration to save
+            config_type: Type of config ("final" or "suggested")
+        """
+        config_dir = Path("results/configs")
+        config_dir.mkdir(parents=True, exist_ok=True)
+
+        config_path = config_dir / f"config_iteration_{iteration}_{config_type}_{self.run_timestamp}.json"
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+
+        print(f"  Saved {config_type} config: {config_path}")
 
     def _handle_authorization_error(self, error: AgentAuthorizationError):
         """

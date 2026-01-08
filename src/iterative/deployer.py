@@ -13,7 +13,10 @@ import google.auth
 import google.auth.transport.requests
 import time
 import uuid
+import logging
+import json
 from typing import Dict, Any, Optional
+from urllib.parse import quote
 
 
 class SingleAgentDeployer:
@@ -130,13 +133,13 @@ class SingleAgentDeployer:
         else:
             print(f"Failed to delete agent: {resp.status_code} - {resp.text}")
 
-    def _wait_for_lro(self, operation_name: str, timeout: int = 300):
+    def _wait_for_lro(self, operation_name: str, timeout: int = 120):
         """
         Wait for a Long-Running Operation (LRO) to complete.
 
         Args:
             operation_name: Full operation resource name
-            timeout: Maximum wait time in seconds
+            timeout: Maximum wait time in seconds (default: 120s)
         """
         url = f"https://{self.host}/v1alpha/{operation_name}"
         start_time = time.time()
@@ -147,25 +150,30 @@ class SingleAgentDeployer:
         while time.time() - start_time < timeout:
             resp = requests.get(url, headers=self._get_headers())
             if resp.status_code != 200:
-                print(f"LRO check failed: {resp.status_code} - {resp.text}")
-                return
+                print(f"LRO check failed: {resp.status_code} - {resp.text[:200]}")
+                # Don't fail immediately - the operation might still complete
+                time.sleep(5)
+                checks += 1
+                continue
 
             data = resp.json()
 
             # Check for errors in the LRO
             if "error" in data:
                 print(f"LRO failed with error: {data['error']}")
-                return
+                return False
 
             if data.get("done", False):
                 # Check if there's a result or error in the response
                 if "error" in data:
                     print(f"LRO completed with error: {data['error']}")
+                    return False
                 elif "response" in data:
                     print("LRO completed successfully.")
+                    return True
                 else:
                     print("LRO completed.")
-                return
+                    return True
 
             checks += 1
             # Print progress every 30 seconds (6 checks)
@@ -175,8 +183,16 @@ class SingleAgentDeployer:
 
             time.sleep(5)
 
-        print(f"LRO timed out after {timeout}s")
-        print("The operation may still be processing. Check agent status manually.")
+        print(f"\n⚠️  LRO timed out after {timeout}s")
+        print("Checking if agent is actually deployed...")
+
+        # Verify agent is deployed by checking its state
+        if self._verify_agent_deployed():
+            print("✓ Agent is deployed and ready (LRO timeout ignored)")
+            return True
+        else:
+            print("✗ Agent deployment could not be verified")
+            return False
 
     def deploy_initial(self, config: Dict[str, Any]) -> str:
         """
@@ -319,21 +335,24 @@ class SingleAgentDeployer:
                 operation_name = resp_data['name']
                 print(f"Deployment LRO started: {operation_name}")
                 # Wait for deployment to complete before using agent
-                self._wait_for_lro(operation_name)
-                print("Agent deployed and ready!")
+                lro_success = self._wait_for_lro(operation_name, timeout=120)
+                if lro_success:
+                    print("✓ Agent deployed and ready!")
+                else:
+                    print("⚠️  Deployment verification inconclusive - check console")
             else:
                 # Direct success response (no LRO needed)
-                print("Agent deployed successfully (no LRO wait needed).")
+                print("✓ Agent deployed successfully (no LRO wait needed).")
         elif deploy_resp.status_code == 400 and "Invalid agent state for deploy: ENABLED" in deploy_resp.text:
-            print("Agent already enabled.")
+            print("✓ Agent already enabled.")
         else:
-            print(f"Warning: Deploy request returned {deploy_resp.status_code} - {deploy_resp.text}")
+            print(f"Warning: Deploy request returned {deploy_resp.status_code} - {deploy_resp.text[:300]}")
 
         return self.agent_id
 
     def update_prompt(self, new_prompt: str, params: Dict[str, Any] = None, full_config: Dict[str, Any] = None) -> bool:
         """
-        Update agent configuration using PATCH API.
+        Update agent configuration using PATCH API with retry logic.
 
         Preserves OAuth authorization and agent state while updating configuration.
 
@@ -348,63 +367,177 @@ class SingleAgentDeployer:
         if not self.agent_name:
             raise ValueError("Agent not deployed. Call deploy_initial() first.")
 
-        print(f"\nUpdating agent configuration via PATCH API...")
+        max_retries = 3
+        current_retry_delay = 5  # Initial delay in seconds
 
-        # Build nl_query_config with all fields
-        nl_query_config = {
-            "nl2sqlPrompt": new_prompt
-        }
+        for attempt in range(1, max_retries + 1):
+            try:
+                print(f"\n{'─'*80}")
+                print(f"Updating agent configuration (attempt {attempt}/{max_retries})")
+                print(f"{'─'*80}")
 
-        # If full_config provided, use all its fields
-        if full_config:
-            if full_config.get("schema_description"):
-                nl_query_config["schemaDescription"] = full_config["schema_description"]
-            if full_config.get("nl2py_prompt"):
-                nl_query_config["nl2pyPrompt"] = full_config["nl2py_prompt"]
-            if full_config.get("nl2sql_examples"):
-                nl_query_config["nl2sqlExamples"] = full_config["nl2sql_examples"]
-
-        # Legacy: support params dict
-        if params and "schema_context" in params:
-            nl_query_config["schemaDescription"] = params["schema_context"]
-
-        payload = {
-            "managed_agent_definition": {
-                "data_science_agent_config": {
-                    "bq_project_id": self.project_id,
-                    "bq_dataset_id": self.dataset_id,
-                    "nl_query_config": nl_query_config
+                # Build nl_query_config with all fields
+                nl_query_config = {
+                    "nl2sqlPrompt": new_prompt
                 }
-            }
-        }
 
-        # Add table access control if present in full_config
-        if full_config:
-            data_science_config = payload["managed_agent_definition"]["data_science_agent_config"]
-            if full_config.get("allowed_tables"):
-                data_science_config["allowedTables"] = full_config["allowed_tables"]
-            if full_config.get("blocked_tables"):
-                data_science_config["blockedTables"] = full_config["blocked_tables"]
+                # If full_config provided, use all its fields (skip null/empty values)
+                if full_config:
+                    # Only add schema_description if it's non-null and non-empty
+                    if full_config.get("schema_description"):
+                        nl_query_config["schemaDescription"] = full_config["schema_description"]
 
-        # PATCH with update mask
-        update_mask = "managedAgentDefinition.dataScienceAgentConfig.nlQueryConfig"
-        url = f"https://{self.host}/v1alpha/{self.agent_name}?updateMask={update_mask}"
+                    # Only add nl2py_prompt if it's non-null and non-empty
+                    nl2py = full_config.get("nl2py_prompt")
+                    if nl2py and nl2py is not None:
+                        nl_query_config["nl2pyPrompt"] = nl2py
 
-        resp = requests.patch(url, headers=self._get_headers(), json=payload)
+                    # Only add nl2sql_examples if it's a non-empty list
+                    examples = full_config.get("nl2sql_examples")
+                    if examples and isinstance(examples, list) and len(examples) > 0:
+                        nl_query_config["nl2sqlExamples"] = examples
 
-        if resp.status_code != 200:
-            print(f"PATCH failed: {resp.status_code} - {resp.text}")
+                # Legacy: support params dict
+                if params and "schema_context" in params:
+                    nl_query_config["schemaDescription"] = params["schema_context"]
+
+                # Build minimal payload - only include nlQueryConfig for update
+                # (bq_project_id and bq_dataset_id are immutable after creation)
+                payload = {
+                    "managed_agent_definition": {
+                        "data_science_agent_config": {
+                            "nl_query_config": nl_query_config
+                        }
+                    }
+                }
+
+                # Add table access control if present in full_config (only non-empty)
+                update_mask_fields = ["managedAgentDefinition.dataScienceAgentConfig.nlQueryConfig"]
+
+                if full_config:
+                    data_science_config = payload["managed_agent_definition"]["data_science_agent_config"]
+                    # Only include allowed_tables if it's a non-empty list
+                    if full_config.get("allowed_tables") and len(full_config["allowed_tables"]) > 0:
+                        data_science_config["allowedTables"] = full_config["allowed_tables"]
+                        update_mask_fields.append("managedAgentDefinition.dataScienceAgentConfig.allowedTables")
+                    # Only include blocked_tables if it's a non-empty list
+                    if full_config.get("blocked_tables") and len(full_config["blocked_tables"]) > 0:
+                        data_science_config["blockedTables"] = full_config["blocked_tables"]
+                        update_mask_fields.append("managedAgentDefinition.dataScienceAgentConfig.blockedTables")
+
+                # PATCH with dynamic update mask (URL-encoded)
+                update_mask = ",".join(update_mask_fields)
+                encoded_mask = quote(update_mask, safe='')
+                url = f"https://{self.host}/v1alpha/{self.agent_name}?updateMask={encoded_mask}"
+
+                print(f"Update mask: {update_mask}")
+
+                print("Sending PATCH request...")
+                resp = requests.patch(url, headers=self._get_headers(), json=payload)
+
+                if resp.status_code != 200:
+                    error_msg = f"PATCH failed: {resp.status_code}"
+                    print(f"\n❌ {error_msg}")
+                    print(f"\n📋 Full Error Response:")
+                    print(f"{resp.text}")  # Show full error
+                    print(f"\n📤 Request Details:")
+                    print(f"URL: {url}")
+                    print(f"Update Mask: {update_mask}")
+                    print(f"\n📦 Payload (first 1000 chars):")
+                    print(f"{json.dumps(payload, indent=2)[:1000]}")
+
+                    # Log detailed error
+                    logging.error(f"PATCH attempt {attempt} failed")
+                    logging.error(f"URL: {url}")
+                    logging.error(f"Payload: {json.dumps(payload, indent=2)}")
+                    logging.error(f"Response: {resp.text}")
+
+                    if attempt < max_retries:
+                        print(f"Retrying in {current_retry_delay}s...")
+                        time.sleep(current_retry_delay)
+                        current_retry_delay *= 2  # Exponential backoff
+                        continue
+                    else:
+                        return False
+
+                print("✓ PATCH successful")
+
+                # Check if LRO was returned
+                data = resp.json()
+                if "name" in data and "operations" in data["name"]:
+                    self._wait_for_lro(data["name"])
+
+                # Deploy the agent to enable it after configuration update
+                print("\n🚀 Deploying updated agent...")
+                deploy_success = self._deploy_agent()
+
+                if not deploy_success:
+                    if attempt < max_retries:
+                        print(f"❌ Deploy failed. Retrying in {current_retry_delay}s...")
+                        time.sleep(current_retry_delay)
+                        current_retry_delay *= 2
+                        continue
+                    else:
+                        return False
+
+                print("✅ Agent deployed and ready!")
+                return True
+
+            except Exception as e:
+                error_msg = f"Exception during update: {e}"
+                print(f"❌ {error_msg}")
+                logging.error(error_msg)
+
+                if attempt < max_retries:
+                    print(f"Retrying in {current_retry_delay}s...")
+                    time.sleep(current_retry_delay)
+                    current_retry_delay *= 2
+                    continue
+                else:
+                    return False
+
+        return False
+
+    def _verify_agent_deployed(self) -> bool:
+        """
+        Verify that the agent is actually deployed and ready.
+
+        Returns:
+            bool: True if agent is deployed and enabled, False otherwise
+        """
+        if not self.agent_name:
             return False
 
-        print("Agent prompt updated successfully!")
+        try:
+            # Get agent details
+            url = f"https://{self.host}/v1alpha/{self.agent_name}"
+            resp = requests.get(url, headers=self._get_headers())
 
-        # Check if LRO was returned
-        data = resp.json()
-        if "name" in data and "operations" in data["name"]:
-            self._wait_for_lro(data["name"])
+            if resp.status_code == 200:
+                agent_data = resp.json()
+                state = agent_data.get("state", "UNKNOWN")
+                print(f"  Agent state: {state}")
+                # Accept both ENABLED and ACTIVE as valid deployed states
+                return state in ["ENABLED", "ACTIVE"]
+            else:
+                print(f"  Failed to get agent status: {resp.status_code}")
+                return False
+        except Exception as e:
+            print(f"  Error verifying agent: {e}")
+            return False
 
-        # Deploy the agent to enable it after configuration update
-        print("\nDeploying updated agent...")
+    def _deploy_agent(self) -> bool:
+        """
+        Deploy the agent (helper method for retry logic).
+
+        Returns:
+            bool: True if deployment successful, False otherwise
+        """
+        # First check if agent is already deployed/enabled
+        if self._verify_agent_deployed():
+            print("✓ Agent already deployed and enabled (skipping deploy call)")
+            return True
+
         deploy_url = f"https://{self.host}/v1alpha/{self.agent_name}:deploy"
         deploy_payload = {"name": self.agent_name}
 
@@ -417,19 +550,24 @@ class SingleAgentDeployer:
             if 'name' in resp_data and 'operations' in resp_data['name']:
                 operation_name = resp_data['name']
                 print(f"Deployment LRO started: {operation_name}")
-                # Wait for deployment to complete before using agent
-                self._wait_for_lro(operation_name)
-                print("Agent deployed and ready for queries!")
+                lro_success = self._wait_for_lro(operation_name, timeout=120)
+                if lro_success:
+                    print("✓ Deployment LRO completed")
+                    return True
+                else:
+                    # LRO failed or timed out - final verification already done in _wait_for_lro
+                    return False
             else:
                 # Direct success response (no LRO needed)
-                print("Agent deployed successfully (no LRO wait needed).")
+                print("✓ Agent deployed (no LRO wait needed)")
+            return True
         elif deploy_resp.status_code == 400 and "Invalid agent state for deploy: ENABLED" in deploy_resp.text:
-            print("Agent already enabled.")
+            print("✓ Agent already enabled")
+            return True
         else:
-            print(f"Warning: Deploy request returned {deploy_resp.status_code} - {deploy_resp.text}")
+            print(f"Deploy failed: {deploy_resp.status_code} - {deploy_resp.text[:300]}")
+            logging.error(f"Deploy failed: {deploy_resp.status_code} - {deploy_resp.text}")
             return False
-
-        return True
 
     def find_existing_agent(self, display_name: str) -> Optional[str]:
         """

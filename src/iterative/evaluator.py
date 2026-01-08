@@ -11,6 +11,8 @@ Integrates:
 from typing import List, Dict, Any, Tuple
 import sys
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
@@ -38,7 +40,8 @@ class SingleAgentEvaluator:
         location: str,
         engine_id: str,
         output_path: str = None,
-        timestamp: str = None
+        timestamp: str = None,
+        max_workers: int = 10
     ):
         """
         Initialize evaluator.
@@ -50,11 +53,13 @@ class SingleAgentEvaluator:
             engine_id: Discovery Engine ID
             output_path: Path to save evaluation results (auto-generated with timestamp if None)
             timestamp: Timestamp string for filenames (auto-generated if None)
+            max_workers: Maximum number of parallel workers for test execution (default: 10)
         """
         self.agent_id = agent_id
         self.project_id = project_id
         self.location = location
         self.engine_id = engine_id
+        self.max_workers = max_workers
 
         # Generate timestamped filename if not provided
         if output_path is None:
@@ -80,6 +85,9 @@ class SingleAgentEvaluator:
             judge=self.judge,
             output_path=output_path
         )
+
+        # Thread-safe lock for result aggregation
+        self._results_lock = threading.Lock()
 
     def evaluate(self, golden_set_path: str) -> Tuple[List[Dict], Dict[str, Any], List[Dict]]:
         """
@@ -115,13 +123,39 @@ class SingleAgentEvaluator:
 
         return results, metrics, failures
 
+    def _run_single_test(
+        self,
+        test_case: Dict,
+        repeat_num: int,
+        test_idx: int
+    ) -> Dict:
+        """
+        Run a single test case with isolated session (for parallel execution).
+
+        Args:
+            test_case: Dict with 'nl_question', 'expected_sql', 'question_id'
+            repeat_num: Which repeat this is (1, 2, 3, ...)
+            test_idx: Index of test in golden set (for ordering)
+
+        Returns:
+            Dict with test result tagged with repeat_num
+        """
+        # Use runner's run_single_test method
+        result = self.runner.run_single_test(test_case, session_id=None)
+
+        # Tag with repeat number
+        result['repeat_num'] = repeat_num
+        result['test_idx'] = test_idx
+
+        return result
+
     def evaluate_with_repeats(
         self,
         golden_set_path: str,
         num_repeats: int = 3
     ) -> Tuple[List[Dict], Dict[str, Any], List[Dict]]:
         """
-        Run evaluation multiple times and aggregate results.
+        Run evaluation multiple times IN PARALLEL and aggregate results.
 
         Args:
             golden_set_path: Path to golden set file
@@ -134,40 +168,78 @@ class SingleAgentEvaluator:
                 - failures: Failures from WORST run (for conservative improvement)
         """
         print(f"\n{'='*80}")
-        print(f"RUNNING EVALUATION WITH {num_repeats} REPEATS")
+        print(f"RUNNING EVALUATION WITH {num_repeats} REPEATS (PARALLEL)")
         print(f"{'='*80}")
         print(f"Agent ID: {self.agent_id}")
-        print(f"Golden Set: {golden_set_path}\n")
+        print(f"Golden Set: {golden_set_path}")
+        print(f"Max Workers: {self.max_workers}\n")
 
-        all_results = []
-        repeat_metrics = []
+        # Load test cases
+        test_cases = self.loader.load(golden_set_path)
 
+        # Create work items: (test_case, repeat_num, test_idx)
+        work_items = []
         for repeat_num in range(1, num_repeats + 1):
-            print(f"\n{'─'*80}")
-            print(f"Repeat {repeat_num}/{num_repeats}")
-            print(f"{'─'*80}\n")
+            for idx, test_case in enumerate(test_cases):
+                work_items.append((test_case, repeat_num, idx))
 
-            # Create new runner for this repeat to clear state
-            self.runner = TestRunner(
-                loader=self.loader,
-                client=self.client,
-                comparator=self.comparator,
-                judge=self.judge,
-                output_path=f"{self.output_path}.repeat{repeat_num}"
-            )
+        total_tests = len(work_items)
+        print(f"Total test executions: {total_tests} ({len(test_cases)} tests × {num_repeats} repeats)\n")
 
-            # Run evaluation
-            self.runner.run(golden_set_path)
-            results = self.runner.results
+        # Execute tests in parallel
+        all_results = []
+        completed = 0
 
-            # Tag each result with repeat number
-            for result in results:
-                result['repeat_num'] = repeat_num
+        print("Running tests in parallel...")
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Submit all tasks
+            future_to_work = {
+                executor.submit(self._run_single_test, tc, rn, idx): (tc, rn, idx)
+                for tc, rn, idx in work_items
+            }
 
-            all_results.extend(results)
+            # Collect results as they complete
+            for future in as_completed(future_to_work):
+                test_case, repeat_num, test_idx = future_to_work[future]
+                try:
+                    result = future.result()
+                    with self._results_lock:
+                        all_results.append(result)
+                        completed += 1
 
-            # Calculate metrics for this repeat
-            metrics = self.runner.calculate_metrics(results)
+                    # Progress indicator
+                    if completed % 5 == 0 or completed == total_tests:
+                        print(f"Progress: {completed}/{total_tests} tests completed ({completed*100//total_tests}%)")
+
+                except Exception as e:
+                    print(f"Error in test '{test_case.get('question', 'unknown')}': {e}")
+                    # Add error result
+                    with self._results_lock:
+                        all_results.append({
+                            "question_id": test_case.get("question_id"),
+                            "question": test_case.get("nl_question"),
+                            "error": str(e),
+                            "repeat_num": repeat_num,
+                            "test_idx": test_idx
+                        })
+                        completed += 1
+
+        print(f"\n✓ All {total_tests} tests completed\n")
+
+        # Group results by repeat_num for metrics calculation
+        repeat_metrics = []
+        for repeat_num in range(1, num_repeats + 1):
+            repeat_results = [r for r in all_results if r.get('repeat_num') == repeat_num]
+
+            # Sort by test_idx to maintain order
+            repeat_results.sort(key=lambda r: r.get('test_idx', 0))
+
+            # Save to file
+            output_file = f"{self.output_path}.repeat{repeat_num}"
+            self._save_results_to_file(repeat_results, output_file)
+
+            # Calculate metrics
+            metrics = self.runner.calculate_metrics(repeat_results)
             metrics['repeat_num'] = repeat_num
             repeat_metrics.append(metrics)
 
@@ -185,6 +257,13 @@ class SingleAgentEvaluator:
         self._display_repeat_summary(aggregated_metrics, repeat_metrics, failures)
 
         return all_results, aggregated_metrics, failures
+
+    def _save_results_to_file(self, results: List[Dict], output_path: str):
+        """Save results to JSONL file."""
+        import json
+        with open(output_path, 'w') as f:
+            for result in results:
+                f.write(json.dumps(result) + "\n")
 
     def _aggregate_repeat_metrics(self, repeat_metrics: List[Dict]) -> Dict[str, Any]:
         """

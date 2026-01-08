@@ -7,6 +7,10 @@ from .agent_client import MockAgentClient, RealAgentClient
 from .engine import TestEngine
 from dotenv import load_dotenv
 
+# Import iterative optimization components
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+from iterative.optimizer import IterativeOptimizer
+
 load_dotenv()
 
 # Configure Logging
@@ -83,6 +87,260 @@ def run_all(config_file, golden_set, output_file, parallel, use_real_api):
         logger.info(f"Summary: {correct_count}/{total} passed ({(correct_count/total)*100:.1f}%)")
     else:
         logger.info("Summary: No results (0 passed).")
+
+@cli.command()
+@click.option('--config-file', type=click.Path(exists=True), required=True, help='Path to agent configuration JSON')
+def deploy(config_file):
+    """
+    Deploy a new Data Insights Agent (first-time setup).
+
+    This command:
+    1. Deploys a single agent with the configuration
+    2. Displays OAuth authorization instructions
+    3. Saves agent details for future optimization runs
+
+    After deployment, you must authorize the agent via Gemini Enterprise UI
+    before running optimization.
+    """
+    logger.info("Deploying Data Insights Agent (first-time setup)...")
+
+    # Load configuration
+    with open(config_file, 'r') as f:
+        config_data = json.load(f)
+
+    # Handle both single config and multi-variant config files
+    if isinstance(config_data, list):
+        # Multi-variant config - extract first one or look for "baseline"
+        baseline_config = None
+        for cfg in config_data:
+            if cfg.get("name") == "baseline":
+                baseline_config = cfg
+                break
+        if not baseline_config:
+            baseline_config = config_data[0]  # Use first config if no baseline found
+        config = baseline_config
+    elif isinstance(config_data, dict):
+        # Check if it's a wrapped config
+        if "configs" in config_data:
+            configs_list = config_data["configs"]
+            config = configs_list[0] if configs_list else {}
+        else:
+            # Single config
+            config = config_data
+    else:
+        raise click.ClickException("Invalid config file format")
+
+    # Validate required environment variables
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+    location = os.getenv("DIA_LOCATION", "global")
+    engine_id = os.getenv("DIA_ENGINE_ID")
+    dataset_id = os.getenv("BQ_DATASET_ID")
+
+    if not all([project_id, location, engine_id, dataset_id]):
+        missing = []
+        if not project_id:
+            missing.append("GOOGLE_CLOUD_PROJECT")
+        if not engine_id:
+            missing.append("DIA_ENGINE_ID")
+        if not dataset_id:
+            missing.append("BQ_DATASET_ID")
+        raise click.ClickException(f"Missing required environment variables: {', '.join(missing)}")
+
+    logger.info(f"Configuration:")
+    logger.info(f"  Project: {project_id}")
+    logger.info(f"  Location: {location}")
+    logger.info(f"  Engine: {engine_id}")
+    logger.info(f"  Dataset: {dataset_id}")
+    logger.info(f"  Config: {config.get('name', 'unknown')}")
+
+    # Import deployer
+    from iterative.deployer import SingleAgentDeployer
+
+    # Initialize deployer
+    deployer = SingleAgentDeployer(
+        project_id=project_id,
+        location=location,
+        engine_id=engine_id,
+        dataset_id=dataset_id
+    )
+
+    # Deploy agent
+    try:
+        agent_id = deployer.deploy_initial(config)
+
+        # Display OAuth authorization instructions
+        print(f"\n{'='*80}")
+        print("✓ AGENT DEPLOYED SUCCESSFULLY")
+        print(f"{'='*80}\n")
+
+        print(f"Agent Details:")
+        print(f"  Agent ID: {agent_id}")
+        print(f"  Display Name: {deployer.agent_display_name}")
+        print(f"  Project: {project_id}")
+        print(f"  Location: {location}")
+        print(f"  Engine: {engine_id}\n")
+
+        print(f"{'='*80}")
+        print("⚠️  IMPORTANT: OAuth Authorization Required (ONE-TIME SETUP)")
+        print(f"{'='*80}\n")
+
+        print("Before running optimization, you must authorize the agent to access BigQuery.\n")
+
+        print("OPTION 1: Authorize via Gemini Enterprise UI (Recommended)")
+        print(f"{'─'*80}")
+        print("1. Navigate to Gemini Enterprise in Google Cloud Console:")
+        print(f"   https://console.cloud.google.com/gen-app-builder/engines/{engine_id}/assistants/default_assistant/agents?project={project_id}\n")
+        print("2. Find your deployed agent in the agents list")
+        print(f"   (Look for: {deployer.agent_display_name})\n")
+        print("3. Click on the agent to open its details\n")
+        print("4. Click 'Test' or 'Chat' to open the test interface\n")
+        print("5. Send a test query (e.g., 'How many customers are there?')\n")
+        print("6. The agent will prompt for OAuth authorization")
+        print("   - Click the authorization link in the response")
+        print("   - Sign in with your Google account")
+        print("   - Grant BigQuery access permissions\n")
+        print("7. Send the query again to verify it works\n")
+
+        print("OPTION 2: Authorize via CLI Script")
+        print(f"{'─'*80}")
+        print("1. Set the agent ID environment variable:")
+        print(f"   export DIA_AGENT_ID={agent_id}\n")
+        print("2. Run the authorization script:")
+        print(f"   python scripts/authorize_agent.py\n")
+        print("3. Follow the script's instructions to authorize\n")
+
+        print(f"{'='*80}")
+        print("NEXT STEPS")
+        print(f"{'='*80}\n")
+
+        print("After authorizing the agent, run optimization:")
+        print(f"  dia-harness optimize \\")
+        print(f"    --config-file {config_file} \\")
+        print(f"    --golden-set data/golden_set.json \\")
+        print(f"    --skip-deploy\n")
+
+        print(f"{'='*80}")
+        print("NOTE: Authorization is one-time per agent and persists across runs.")
+        print(f"{'='*80}\n")
+
+        logger.info("Deployment complete!")
+
+    except Exception as e:
+        logger.error(f"Deployment failed: {e}")
+        raise click.ClickException(str(e))
+
+@cli.command()
+@click.option('--config-file', type=click.Path(exists=True), required=True, help='Path to agent configuration JSON')
+@click.option('--golden-set', type=click.Path(exists=True), required=True, help='Path to training set (golden set)')
+@click.option('--test-set', type=click.Path(exists=True), default=None, help='Optional path to held-out test set')
+@click.option('--max-iterations', default=10, help='Maximum number of optimization iterations')
+@click.option('--num-repeats', default=3, help='Number of times to repeat each test (default: 3)')
+@click.option('--max-workers', default=10, help='Maximum number of parallel workers for test execution (default: 10)')
+@click.option('--auto-accept', is_flag=True, help='Automatically approve all AI-suggested improvements')
+def optimize(config_file, golden_set, test_set, max_iterations, num_repeats, max_workers, auto_accept):
+    """
+    Run iterative optimization for a single agent.
+
+    PREREQUISITE: Run 'dia-harness deploy' FIRST to deploy and authorize the agent.
+
+    This command:
+    1. Finds the existing deployed agent by name
+    2. Runs evaluation against the golden set (with repeats)
+    3. Analyzes failures and suggests prompt improvements
+    4. Updates the agent via PATCH API
+    5. Repeats until user stops or accuracy reaches 100%
+
+    FEATURES:
+    - Repeat measurements (--num-repeats): Run each test multiple times for reliability
+    - Test dataset (--test-set): Evaluate on held-out data to detect overfitting
+    - Auto-accept (--auto-accept): Fully automated optimization without manual approval
+
+    Results are tracked in results/trajectory_history_<timestamp>.json with charts in results/charts/
+
+    WORKFLOW:
+    1. First time: dia-harness deploy --config-file configs/baseline_config.json
+    2. Authorize agent via Gemini Enterprise UI (one-time)
+    3. Always:     dia-harness optimize --config-file configs/baseline_config.json --golden-set data/golden_set.json
+    """
+    if auto_accept:
+        logger.info("AUTO-ACCEPT MODE ENABLED: Fully automated optimization")
+
+    logger.info("Starting Iterative Agent Optimization...")
+
+    # Load configuration
+    with open(config_file, 'r') as f:
+        config_data = json.load(f)
+
+    # Handle both single config and multi-variant config files
+    if isinstance(config_data, list):
+        # Multi-variant config - extract first one or look for "baseline"
+        baseline_config = None
+        for cfg in config_data:
+            if cfg.get("name") == "baseline":
+                baseline_config = cfg
+                break
+        if not baseline_config:
+            baseline_config = config_data[0]  # Use first config if no baseline found
+        config = baseline_config
+    elif isinstance(config_data, dict):
+        # Check if it's a wrapped config
+        if "configs" in config_data:
+            configs_list = config_data["configs"]
+            config = configs_list[0] if configs_list else {}
+        else:
+            # Single config
+            config = config_data
+    else:
+        raise click.ClickException("Invalid config file format")
+
+    # Validate required environment variables
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+    location = os.getenv("DIA_LOCATION", "global")
+    engine_id = os.getenv("DIA_ENGINE_ID")
+    dataset_id = os.getenv("BQ_DATASET_ID")
+
+    if not all([project_id, location, engine_id, dataset_id]):
+        missing = []
+        if not project_id:
+            missing.append("GOOGLE_CLOUD_PROJECT")
+        if not engine_id:
+            missing.append("DIA_ENGINE_ID")
+        if not dataset_id:
+            missing.append("BQ_DATASET_ID")
+        raise click.ClickException(f"Missing required environment variables: {', '.join(missing)}")
+
+    logger.info(f"Configuration:")
+    logger.info(f"  Project: {project_id}")
+    logger.info(f"  Location: {location}")
+    logger.info(f"  Engine: {engine_id}")
+    logger.info(f"  Dataset: {dataset_id}")
+    logger.info(f"  Config: {config.get('name', 'unknown')}")
+    logger.info(f"  Training Set: {golden_set}")
+    if test_set:
+        logger.info(f"  Test Set: {test_set}")
+    logger.info(f"  Max Iterations: {max_iterations}")
+    logger.info(f"  Repeat Measurements: {num_repeats}")
+    logger.info(f"  Max Workers: {max_workers}")
+    logger.info(f"  Auto-Accept: {auto_accept}")
+
+    # Initialize and run optimizer (always uses existing agent)
+    optimizer = IterativeOptimizer(
+        config=config,
+        golden_set_path=golden_set,
+        test_set_path=test_set,
+        project_id=project_id,
+        location=location,
+        engine_id=engine_id,
+        dataset_id=dataset_id,
+        max_iterations=max_iterations,
+        num_repeats=num_repeats,
+        max_workers=max_workers,
+        auto_accept=auto_accept
+    )
+
+    optimizer.run()
+
+    logger.info("Optimization complete!")
 
 if __name__ == '__main__':
     cli()

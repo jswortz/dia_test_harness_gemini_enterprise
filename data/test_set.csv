@@ -1,0 +1,6 @@
+nl_question,expected_sql
+What is the average order amount?,"SELECT AVG(amount) FROM `dia_test_dataset.orders`"
+List all customers from California.,"SELECT name FROM `dia_test_dataset.customers` WHERE state = 'California'"
+How many products are in the Electronics category?,"SELECT COUNT(*) FROM `dia_test_dataset.products` WHERE category = 'Electronics'"
+Show the total number of orders per customer.,"SELECT customer_id, COUNT(*) as order_count FROM `dia_test_dataset.orders` GROUP BY customer_id"
+What is the most expensive product?,"SELECT name, price FROM `dia_test_dataset.products` ORDER BY price DESC LIMIT 1"

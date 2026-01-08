@@ -24,7 +24,7 @@ class PromptImprover:
     - Diff visualization
     """
 
-    def __init__(self, project_id: str, location: str = "global", model_name: str = "gemini-2.0-flash-exp"):
+    def __init__(self, project_id: str, location: str = "global", model_name: str = "gemini-3-pro-preview"):
         """
         Initialize prompt improver.
 
@@ -202,12 +202,12 @@ The output should be a direct replacement for the current prompt.
             elif choice == 'e':
                 # Edit suggested prompt
                 print("\n=== Edit Prompt ===")
-                print("Enter your edited prompt below. When done, enter '<<<END>>>' on a new line:\n")
+                print("Enter your edited prompt below. When done, enter 'END' on a new line:\n")
 
                 lines = []
                 while True:
                     line = input()
-                    if line.strip() == "<<<END>>>":
+                    if line.strip() == "END":
                         break
                     lines.append(line)
 

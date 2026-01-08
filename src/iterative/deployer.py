@@ -296,12 +296,13 @@ class SingleAgentDeployer:
         if config.get("icon_uri"):
             payload["icon"] = {"uri": config["icon_uri"]}
 
-        # Add table access control if present
-        data_science_config = payload["managed_agent_definition"]["data_science_agent_config"]
-        if config.get("allowed_tables"):
-            data_science_config["allowedTables"] = config["allowed_tables"]
-        if config.get("blocked_tables"):
-            data_science_config["blockedTables"] = config["blocked_tables"]
+        # NOTE: Table access control fields (allowedTables, blockedTables) are not supported by the API
+        # Commenting out to prevent API errors
+        # data_science_config = payload["managed_agent_definition"]["data_science_agent_config"]
+        # if config.get("allowed_tables"):
+        #     data_science_config["allowedTables"] = config["allowed_tables"]
+        # if config.get("blocked_tables"):
+        #     data_science_config["blockedTables"] = config["blocked_tables"]
 
         # Add authorization config if OAuth resource created
         if auth_resource:
@@ -411,19 +412,18 @@ class SingleAgentDeployer:
                     }
                 }
 
-                # Add table access control if present in full_config (only non-empty)
+                # Table access control fields are not supported by the API - only update nlQueryConfig
                 update_mask_fields = ["managedAgentDefinition.dataScienceAgentConfig.nlQueryConfig"]
 
-                if full_config:
-                    data_science_config = payload["managed_agent_definition"]["data_science_agent_config"]
-                    # Only include allowed_tables if it's a non-empty list
-                    if full_config.get("allowed_tables") and len(full_config["allowed_tables"]) > 0:
-                        data_science_config["allowedTables"] = full_config["allowed_tables"]
-                        update_mask_fields.append("managedAgentDefinition.dataScienceAgentConfig.allowedTables")
-                    # Only include blocked_tables if it's a non-empty list
-                    if full_config.get("blocked_tables") and len(full_config["blocked_tables"]) > 0:
-                        data_science_config["blockedTables"] = full_config["blocked_tables"]
-                        update_mask_fields.append("managedAgentDefinition.dataScienceAgentConfig.blockedTables")
+                # NOTE: Removed table access control support - API doesn't recognize these fields
+                # if full_config:
+                #     data_science_config = payload["managed_agent_definition"]["data_science_agent_config"]
+                #     if full_config.get("allowed_tables") and len(full_config["allowed_tables"]) > 0:
+                #         data_science_config["allowedTables"] = full_config["allowed_tables"]
+                #         update_mask_fields.append("managedAgentDefinition.dataScienceAgentConfig.allowedTables")
+                #     if full_config.get("blocked_tables") and len(full_config["blocked_tables"]) > 0:
+                #         data_science_config["blockedTables"] = full_config["blocked_tables"]
+                #         update_mask_fields.append("managedAgentDefinition.dataScienceAgentConfig.blockedTables")
 
                 # PATCH with dynamic update mask (URL-encoded)
                 update_mask = ",".join(update_mask_fields)

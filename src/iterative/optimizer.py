@@ -12,6 +12,7 @@ Coordinates:
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from .deployer import SingleAgentDeployer
 from .evaluator import SingleAgentEvaluator
 from .tracker import TrajectoryTracker
@@ -139,13 +140,14 @@ class IterativeOptimizer:
                     # Always find existing agent - deployment happens via 'deploy' command
                     self._find_existing_agent()
 
-                # Step 2: Run evaluation on training set
-                results, metrics, failures = self._run_evaluation()
-
-                # Step 2b: Run evaluation on test set (if provided)
-                test_results, test_metrics = None, None
+                # Step 2: Run evaluations in parallel (training + test if provided)
                 if self.test_set_path:
-                    test_results, test_metrics, _ = self._run_test_evaluation()
+                    # Run both evaluations in parallel
+                    results, metrics, failures, test_results, test_metrics = self._run_parallel_evaluations()
+                else:
+                    # Only run training evaluation
+                    results, metrics, failures = self._run_evaluation()
+                    test_results, test_metrics = None, None
 
                 # Step 3: Initialize tracking variables for this iteration
                 suggested_config = None
@@ -164,6 +166,23 @@ class IterativeOptimizer:
                     print("PERFECT SCORE ACHIEVED!")
                     print(f"{'='*80}\n")
                     print("All tests passed. Optimization complete.")
+
+                    # Track this perfect iteration before exiting
+                    self.tracker.add_iteration(
+                        iteration_num=iteration,
+                        config=self._get_current_config(),
+                        results=results,
+                        metrics=metrics,
+                        failures=failures,
+                        prompt_changes=prompt_changes,
+                        suggested_config=None,
+                        config_approved=True,
+                        deployment_success=True,
+                        test_results=test_results,
+                        test_metrics=test_metrics
+                    )
+                    self.tracker.save()
+                    iteration_tracked = True
                     break
 
                 # Step 6: Analyze failures and suggest improvements to ALL config fields
@@ -178,6 +197,7 @@ class IterativeOptimizer:
                     # Check if ANY config field changed (not just prompt)
                     config_changed = (
                         improved_prompt != self.current_prompt or
+                        self.current_config.get("tool_description") != self.config.get("tool_description") or
                         self.current_config.get("schema_description") != self.config.get("schema_description") or
                         self.current_config.get("nl2sql_examples") != self.config.get("nl2sql_examples") or
                         self.current_config.get("nl2py_prompt") != self.config.get("nl2py_prompt") or
@@ -354,7 +374,10 @@ class IterativeOptimizer:
         )
 
     def _run_evaluation(self) -> tuple:
-        """Run evaluation with repeats and return results, metrics, failures."""
+        """Run evaluation with repeats and return results, metrics, failures.
+
+        Note: Each evaluation already runs repeats in parallel internally.
+        """
         if self.num_repeats > 1:
             return self.evaluator.evaluate_with_repeats(
                 self.golden_set_path,
@@ -365,7 +388,10 @@ class IterativeOptimizer:
             return self.evaluator.evaluate(self.golden_set_path)
 
     def _run_test_evaluation(self) -> tuple:
-        """Run evaluation on held-out test set."""
+        """Run evaluation on held-out test set.
+
+        Note: Evaluation already runs repeats in parallel internally.
+        """
         print(f"\n{'─'*80}")
         print("EVALUATING ON TEST SET (HELD-OUT)")
         print(f"{'─'*80}\n")
@@ -390,6 +416,44 @@ class IterativeOptimizer:
             results, metrics, failures = self.test_evaluator.evaluate(self.test_set_path)
 
         return results, metrics, failures
+
+    def _run_parallel_evaluations(self) -> tuple:
+        """Run training and test evaluations in parallel.
+
+        Returns:
+            Tuple of (train_results, train_metrics, train_failures, test_results, test_metrics)
+        """
+        print(f"\n{'='*80}")
+        print("RUNNING PARALLEL EVALUATIONS (TRAINING + TEST)")
+        print(f"{'='*80}\n")
+
+        # Initialize test evaluator if needed
+        if not self.test_evaluator:
+            self.test_evaluator = SingleAgentEvaluator(
+                agent_id=self.agent_id,
+                project_id=self.project_id,
+                location=self.location,
+                engine_id=self.engine_id,
+                output_path=f"results/eval_test_{self.run_timestamp}.jsonl",
+                timestamp=self.run_timestamp,
+                max_workers=self.max_workers
+            )
+
+        # Execute both evaluations in parallel using ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            # Submit both evaluation tasks
+            train_future = executor.submit(self._run_evaluation)
+            test_future = executor.submit(self._run_test_evaluation)
+
+            # Wait for both to complete and collect results
+            train_results, train_metrics, train_failures = train_future.result()
+            test_results, test_metrics, test_failures = test_future.result()
+
+        print(f"\n{'='*80}")
+        print("PARALLEL EVALUATIONS COMPLETE")
+        print(f"{'='*80}\n")
+
+        return train_results, train_metrics, train_failures, test_results, test_metrics
 
     def _display_results(self, iteration: int, metrics: Dict[str, Any], test_metrics: Optional[Dict[str, Any]], failures: list):
         """Display results with comparison to previous iteration."""

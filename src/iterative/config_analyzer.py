@@ -23,6 +23,7 @@ class ConfigFieldAnalyzer:
 
     Analyzes the following configuration fields:
     - nl2sql_prompt: Natural language to SQL conversion prompt
+    - tool_description: Agent-level description for routing and scoping
     - schema_description: Database schema description
     - nl2sql_examples: Example question-SQL pairs
     - nl2py_prompt: Natural language to Python conversion prompt
@@ -32,6 +33,7 @@ class ConfigFieldAnalyzer:
 
     ANALYZABLE_FIELDS = [
         "nl2sql_prompt",
+        "tool_description",
         "schema_description",
         "nl2sql_examples",
         "nl2py_prompt",
@@ -154,23 +156,27 @@ Your task is to analyze test failures and recommend which configuration fields s
    - Modify when: SQL structure is incorrect, agent misunderstands query intent, or needs better guidance
    - Priority: HIGH - Most impactful field
 
-2. **schema_description**: Detailed description of the database schema, tables, columns, and relationships.
+2. **tool_description**: Description of when and how to use this agent (agent-level guidance for routing).
+   - Modify when: Agent needs clearer scope definition or usage guidance
+   - Priority: MEDIUM - Helps with agent selection and scoping
+
+3. **schema_description**: Detailed description of the database schema, tables, columns, and relationships.
    - Modify when: Agent uses wrong tables/columns, misunderstands schema relationships
    - Priority: HIGH - Critical for correct SQL generation
 
-3. **nl2sql_examples**: Few-shot examples showing question→SQL pairs for pattern learning.
+4. **nl2sql_examples**: Few-shot examples showing question→SQL pairs for pattern learning.
    - Modify when: Agent needs examples of specific query patterns it's failing on
    - Priority: MEDIUM - Helps with specific patterns
 
-4. **nl2py_prompt**: System prompt for natural language to Python conversion (for data manipulation).
+5. **nl2py_prompt**: System prompt for natural language to Python conversion (for data manipulation).
    - Modify when: Failures involve Python-based data processing or transformations
    - Priority: LOW - Only if Python processing is involved
 
-5. **allowed_tables**: Whitelist of tables the agent can query.
+6. **allowed_tables**: Whitelist of tables the agent can query.
    - Modify when: Agent needs access to additional tables
    - Priority: MEDIUM - Controls data access scope
 
-6. **blocked_tables**: Blacklist of tables the agent should not query.
+7. **blocked_tables**: Blacklist of tables the agent should not query.
    - Modify when: Agent queries inappropriate/sensitive tables
    - Priority: MEDIUM - Controls data security
 
@@ -184,7 +190,7 @@ Your task is to analyze test failures and recommend which configuration fields s
 
 ## Your Task
 
-Analyze these failures and provide recommendations for EACH of the 6 configuration fields listed above.
+Analyze these failures and provide recommendations for EACH of the 7 configuration fields listed above.
 
 For each field, determine:
 1. **should_modify** (bool): Whether this field should be changed
@@ -199,6 +205,12 @@ Respond with ONLY a valid JSON object in this exact format (no markdown, no code
 {{
   "field_recommendations": {{
     "nl2sql_prompt": {{
+      "should_modify": true/false,
+      "rationale": "explanation here",
+      "priority": 1-5,
+      "suggested_value": "new value if should_modify=true, otherwise empty string"
+    }},
+    "tool_description": {{
       "should_modify": true/false,
       "rationale": "explanation here",
       "priority": 1-5,
@@ -238,7 +250,7 @@ Respond with ONLY a valid JSON object in this exact format (no markdown, no code
 }}
 
 IMPORTANT:
-- Provide recommendations for ALL 6 fields
+- Provide recommendations for ALL 7 fields
 - Be specific in rationale - reference actual failures
 - Suggested values should be actionable and concrete
 - Only output the JSON, nothing else

@@ -24,7 +24,7 @@ class PromptImprover:
     - Diff visualization
     """
 
-    def __init__(self, project_id: str, location: str = "global", model_name: str = "gemini-2.5-pro"):
+    def __init__(self, project_id: str, location: str = "global", model_name: str = "gemini-3-pro-preview"):
         """
         Initialize prompt improver.
 

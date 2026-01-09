@@ -8,7 +8,7 @@ from .engine import TestEngine
 from dotenv import load_dotenv
 
 # Import iterative optimization components
-from src.iterative.optimizer import IterativeOptimizer
+from iterative.optimizer import IterativeOptimizer
 
 load_dotenv()
 
@@ -153,7 +153,7 @@ def deploy(config_file):
     logger.info(f"  Config: {config.get('name', 'unknown')}")
 
     # Import deployer
-    from src.iterative.deployer import SingleAgentDeployer
+    from iterative.deployer import SingleAgentDeployer
 
     # Initialize deployer
     deployer = SingleAgentDeployer(
@@ -180,6 +180,17 @@ def deploy(config_file):
         print(f"  Engine: {engine_id}\n")
 
         print(f"{'='*80}")
+        print("🔧 REQUIRED: Update .env File for Consistent Testing")
+        print(f"{'='*80}\n")
+
+        print("To ensure all tests use this agent consistently, update your .env file:\n")
+        print(f"  DIA_AGENT_ID={agent_id}\n")
+
+        print("You can do this by running:")
+        print(f"  echo 'DIA_AGENT_ID={agent_id}' >> .env\n")
+        print("Or manually edit the .env file and update/add the DIA_AGENT_ID line.\n")
+
+        print(f"{'='*80}")
         print("⚠️  IMPORTANT: OAuth Authorization Required (ONE-TIME SETUP)")
         print(f"{'='*80}\n")
 
@@ -202,24 +213,26 @@ def deploy(config_file):
 
         print("OPTION 2: Authorize via CLI Script")
         print(f"{'─'*80}")
-        print("1. Set the agent ID environment variable:")
-        print(f"   export DIA_AGENT_ID={agent_id}\n")
-        print("2. Run the authorization script:")
+        print("1. Run the authorization script (agent ID already configured):")
         print(f"   python scripts/authorize_agent.py\n")
-        print("3. Follow the script's instructions to authorize\n")
+        print("2. Follow the script's instructions to authorize\n")
 
         print(f"{'='*80}")
         print("NEXT STEPS")
         print(f"{'='*80}\n")
 
-        print("After authorizing the agent, run optimization:")
-        print(f"  dia-harness optimize \\")
-        print(f"    --config-file {config_file} \\")
-        print(f"    --golden-set data/golden_set.json \\")
-        print(f"    --skip-deploy\n")
+        print("1. Update your .env file with the agent ID (see above)\n")
+        print("2. Authorize the agent (one-time, see options above)\n")
+        print("3. Run optimization:")
+        print(f"   dia-harness optimize \\")
+        print(f"     --config-file {config_file} \\")
+        print(f"     --golden-set data/golden_set.json\n")
 
         print(f"{'='*80}")
-        print("NOTE: Authorization is one-time per agent and persists across runs.")
+        print("NOTES:")
+        print(f"  • Authorization is one-time per agent and persists across runs")
+        print(f"  • All future tests will use the agent ID from .env")
+        print(f"  • This ensures consistent testing on the same agent")
         print(f"{'='*80}\n")
 
         logger.info("Deployment complete!")

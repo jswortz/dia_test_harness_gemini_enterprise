@@ -70,10 +70,7 @@ class AgentClient:
         headers = self._get_headers()
 
         # CRITICAL: Include agentsSpec to route to Data Insights Agent
-        # The agentId can be either the numeric ID or the full resource name
-        # Try with full resource name first
-        agent_resource_name = f"projects/{self.project_id}/locations/{self.location}/collections/default_collection/engines/{self.engine_id}/assistants/default_assistant/agents/{self.agent_id}"
-        
+        # Use the numeric agent ID directly (not the full resource name)
         payload = {
             "session": session_name,
             "query": {
@@ -81,7 +78,7 @@ class AgentClient:
             },
             "agentsSpec": {
                 "agentSpecs": [
-                    {"agentId": agent_resource_name}
+                    {"agentId": self.agent_id}
                 ]
             }
         }

@@ -1,0 +1,32 @@
+[
+  {
+    "question": "How many customers are there?",
+    "expected_sql": "SELECT count(*) FROM `dataset.customers`",
+    "generated_sql": "",
+    "match": false
+  },
+  {
+    "question": "List all product categories.",
+    "expected_sql": "SELECT DISTINCT category FROM `dataset.products`",
+    "generated_sql": "",
+    "match": false
+  },
+  {
+    "question": "Show me the total revenue for each status.",
+    "expected_sql": "SELECT status, SUM(amount) as total_revenue FROM `dataset.orders` GROUP BY status",
+    "generated_sql": "",
+    "match": false
+  },
+  {
+    "question": "What are the top 5 most expensive products?",
+    "expected_sql": "SELECT name, price FROM `dataset.products` ORDER BY price DESC LIMIT 5",
+    "generated_sql": "",
+    "match": false
+  },
+  {
+    "question": "Find customers who placed orders in 2024.",
+    "expected_sql": "SELECT DISTINCT c.name FROM `dataset.customers` c JOIN `dataset.orders` o ON c.id = o.customer_id WHERE o.order_date BETWEEN '2024-01-01' AND '2024-12-31'",
+    "generated_sql": "",
+    "match": false
+  }
+]

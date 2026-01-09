@@ -17,10 +17,10 @@ import threading
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
-from src.evaluation.runner import TestRunner
-from src.evaluation.evaluator import SQLComparator, JudgementModel
-from src.evaluation.agent_client import AgentClient
-from src.evaluation.data_loader import GoldenSetLoader
+from evaluation.runner import TestRunner
+from evaluation.evaluator import SQLComparator, JudgementModel
+from evaluation.agent_client import AgentClient
+from evaluation.data_loader import GoldenSetLoader
 
 
 def get_vertex_ai_location(agent_location: str) -> str:

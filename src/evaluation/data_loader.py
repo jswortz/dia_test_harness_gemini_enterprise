@@ -31,7 +31,7 @@ class GoldenSetLoader:
     def _load_tabular(self, path: str) -> List[Dict]:
         """
         Loads golden set from CSV or Excel file.
-        Expected columns: nl_question, expected_sql
+        Expected columns: nl_question, expected_sql (or variations like 'Question', 'Expected SQL')
         Auto-generates: question_id (UUID), complexity, sql_pattern, expected_result_type
         """
         file_path = Path(path)
@@ -45,11 +45,40 @@ class GoldenSetLoader:
         else:
             raise ValueError(f"Unsupported tabular format: {extension}")
 
+        # Normalize column names to handle different variations
+        df.columns = df.columns.str.strip()
+        column_mapping = {}
+
+        # Map question column (case-insensitive, handles underscores/spaces)
+        question_variants = ['nl_question', 'question', 'nl question', 'nlquestion']
+        for col in df.columns:
+            col_normalized = col.lower().replace('_', ' ').replace('-', ' ').strip()
+            if col_normalized in question_variants:
+                column_mapping[col] = 'nl_question'
+                break
+
+        # Map SQL column
+        sql_variants = ['expected_sql', 'expected sql', 'sql', 'expectedsql', 'query']
+        for col in df.columns:
+            col_normalized = col.lower().replace('_', ' ').replace('-', ' ').strip()
+            if col_normalized in sql_variants:
+                column_mapping[col] = 'expected_sql'
+                break
+
+        # Apply column renaming
+        if column_mapping:
+            df = df.rename(columns=column_mapping)
+
         # Validate required columns
         required_columns = ['nl_question', 'expected_sql']
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
-            raise ValueError(f"Missing required columns: {missing_columns}. Expected: {required_columns}")
+            available_cols = list(df.columns)
+            raise ValueError(
+                f"Missing required columns: {missing_columns}. "
+                f"Available columns: {available_cols}. "
+                f"Expected columns like: 'nl_question'/'question' and 'expected_sql'/'sql'"
+            )
 
         # Convert to list of dictionaries with auto-generated fields
         golden_set = []

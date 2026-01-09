@@ -296,12 +296,13 @@ class SingleAgentDeployer:
         if config.get("icon_uri"):
             payload["icon"] = {"uri": config["icon_uri"]}
 
-        # Add table access control if present
-        data_science_config = payload["managed_agent_definition"]["data_science_agent_config"]
-        if config.get("allowed_tables"):
-            data_science_config["allowedTables"] = config["allowed_tables"]
-        if config.get("blocked_tables"):
-            data_science_config["blockedTables"] = config["blocked_tables"]
+        # NOTE: Table access control fields (allowedTables, blockedTables) are not supported by the API
+        # Commenting out to prevent API errors
+        # data_science_config = payload["managed_agent_definition"]["data_science_agent_config"]
+        # if config.get("allowed_tables"):
+        #     data_science_config["allowedTables"] = config["allowed_tables"]
+        # if config.get("blocked_tables"):
+        #     data_science_config["blockedTables"] = config["blocked_tables"]
 
         # Add authorization config if OAuth resource created
         if auth_resource:

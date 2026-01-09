@@ -202,12 +202,12 @@ The output should be a direct replacement for the current prompt.
             elif choice == 'e':
                 # Edit suggested prompt
                 print("\n=== Edit Prompt ===")
-                print("Enter your edited prompt below. When done, enter '<<<END>>>' on a new line:\n")
+                print("Enter your edited prompt below. When done, enter 'END' on a new line:\n")
 
                 lines = []
                 while True:
                     line = input()
-                    if line.strip() == "<<<END>>>":
+                    if line.strip() == "END":
                         break
                     lines.append(line)
 

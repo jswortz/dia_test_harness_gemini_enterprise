@@ -19,7 +19,7 @@ class SQLComparator:
         return normalize(generated) == normalize(expected)
 
 class JudgementModel:
-    def __init__(self, project_id: str, location: str, model_name: str = "gemini-3-pro-preview"):
+    def __init__(self, project_id: str, location: str, model_name: str = "gemini-2.5-pro"):
         # User requested global location for judgement model
         vertexai.init(project=project_id, location=location)
         self.model = GenerativeModel(model_name)

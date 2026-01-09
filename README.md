@@ -54,7 +54,10 @@ GOOGLE_CLOUD_PROJECT=your-project-id
 DIA_LOCATION=global
 DIA_ENGINE_ID=your-engine-id
 BQ_DATASET_ID=your-dataset-id
+DIA_AGENT_ID=  # ⚠️ ADD THIS AFTER DEPLOYING (see Step 1 below)
 ```
+
+**Note**: The `DIA_AGENT_ID` will be populated after you deploy your agent in Step 1.
 
 ## Quick Start
 
@@ -79,14 +82,30 @@ Agent Details:
 ⚠️  IMPORTANT: OAuth Authorization Required (ONE-TIME SETUP)
 ```
 
-The deploy command will display detailed authorization instructions.
+**🚨 CRITICAL STEP - DO THIS NOW:**
+
+**Copy the Agent ID** from the output above and add it to your `.env` file:
+
+```bash
+# Add this line to your .env file
+echo "DIA_AGENT_ID=6970595320594450988" >> .env
+```
+
+**Or manually edit `.env`** to add:
+```env
+DIA_AGENT_ID=6970595320594450988
+```
+
+⚠️ **Without this step, the `optimize` command will not find your agent!**
+
+The deploy command will also display detailed authorization instructions.
 
 ### Step 2: Authorize Agent (One-Time)
 
 **Authorize via Gemini Enterprise UI (Recommended):**
 
-1. Click the console link provided in deploy output
-2. Find your agent: "Data Agent - baseline"
+1. Go to the console
+2. Find your agent
 3. Click the agent → Click "Test" or "Chat"
 4. Send a test query: `"How many customers are there?"`
 5. Click the OAuth authorization link in the response
@@ -336,8 +355,6 @@ dia-harness optimize \
 
 The agent configuration (`configs/baseline_config.json`) includes:
 
-**Important: `display_name` below will be used to match between the `deploy` and `optimize` methods below**
-
 ```json
 {
   "name": "baseline",
@@ -361,6 +378,11 @@ The agent configuration (`configs/baseline_config.json`) includes:
   "blocked_tables": []
 }
 ```
+
+**Important - Agent Identification:**
+- **Recommended**: Set `DIA_AGENT_ID` in `.env` after deploying (fast, reliable)
+- **Fallback**: If `DIA_AGENT_ID` is not set, the optimizer searches by `display_name`
+- The `display_name` must match exactly between deploy and optimize if using fallback method
 
 **All fields analyzed and optimized by AI**:
 - `nl2sql_prompt`: Main SQL generation instructions (highest priority)
@@ -445,21 +467,30 @@ dia_test_harness_gemini_enterprise/
 ## Troubleshooting
 
 **"Agent Not Found" error:**
+- **Most Common**: Did you add `DIA_AGENT_ID` to your `.env` file after deploying? (See Step 1)
+- Check your `.env` file has: `DIA_AGENT_ID=your-agent-id-number`
+- Alternative: If `DIA_AGENT_ID` is not set, the optimizer searches by `display_name` - ensure it matches between deploy and optimize
 - Make sure you ran `dia-harness deploy` first
-- Check that the config file `name` matches between deploy and optimize
 
 **OAuth authorization errors:**
-- Complete the OAuth flow via Gemini Enterprise UI
-- Authorization is required once per agent, then persists
+- Complete the OAuth flow via Gemini Enterprise UI (see Step 2)
+- Authorization is required once per agent, then persists forever
+- Test the agent in the UI to verify it can query BigQuery successfully
 
 **Low accuracy:**
 - Review failures in the evaluation JSONL files
 - Check if your `schema_description` includes all relevant tables/columns
 - Add more `nl2sql_examples` for common query patterns
+- Ensure your golden set SQL queries use the correct dataset prefix
 
 **Import errors:**
 - Ensure you're in the virtual environment: `source .venv/bin/activate`
 - Reinstall dependencies: `uv pip install -e .`
+
+**Missing charts or reports:**
+- Charts are generated in `results/charts/` after each optimization run
+- If charts are missing, check the console output for visualization errors
+- Reports are saved as `results/OPTIMIZATION_REPORT_<timestamp>.md`
 
 ## Advanced Usage
 

@@ -322,6 +322,11 @@ class IterativeOptimizer:
         if env_agent_id:
             print(f"Using agent ID from .env: {env_agent_id}")
             self.agent_id = env_agent_id
+
+            # Set deployer state for update_prompt to work
+            self.deployer.agent_id = env_agent_id
+            self.deployer.agent_name = f"projects/{self.project_id}/locations/{self.location}/collections/default_collection/engines/{self.engine_id}/assistants/default_assistant/agents/{env_agent_id}"
+
             print(f"✓ Using existing agent: {self.agent_id}\n")
         else:
             # Fallback: Search by display name

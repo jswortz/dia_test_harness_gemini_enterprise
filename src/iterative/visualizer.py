@@ -53,9 +53,24 @@ class TrajectoryVisualizer:
         Returns:
             List of evaluation results per iteration
         """
-        evaluations = self.trajectory_data.get("evaluations", [])
+        iterations = self.trajectory_data.get("iterations", [])
+        if not iterations:
+            logger.warning("No iteration data found in trajectory")
+            return []
+
+        # Extract evaluation section from each iteration
+        evaluations = []
+        for iteration in iterations:
+            if "evaluation" in iteration:
+                eval_data = iteration["evaluation"].copy()
+                # Add iteration number and timestamp for context
+                eval_data["iteration"] = iteration.get("iteration", 0)
+                eval_data["timestamp"] = iteration.get("timestamp")
+                evaluations.append(eval_data)
+
         if not evaluations:
-            logger.warning("No evaluation data found in trajectory")
+            logger.warning("No evaluation data found in iterations")
+
         return evaluations
 
     def _has_repeats(self) -> bool:

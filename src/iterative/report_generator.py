@@ -496,11 +496,47 @@ class OptimizationReportGenerator:
         """Generate appendix with raw data and reproduction commands."""
         section = "## Appendix\n\n"
 
+        # Extract timestamp from trajectory start_time
+        start_time = trajectory.get("start_time", "")
+        timestamp = ""
+        if start_time:
+            # Parse timestamp from ISO format: 2026-01-09T22:51:26.984219
+            # Extract YYYYMMDD_HHMMSS format
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(start_time)
+                timestamp = dt.strftime("%Y%m%d_%H%M%S")
+            except:
+                pass
+
         # Raw data reference
-        section += "### Raw Data\n\n"
-        section += "Complete trajectory history is available in:\n"
-        section += f"- `results/trajectory_history_{agent_id}.json`\n"
-        section += "- `results/iteration_*.json` (individual iteration files)\n\n"
+        section += "### Generated Artifacts\n\n"
+        section += "**Trajectory and Metrics:**\n"
+        if timestamp:
+            section += f"- [`trajectory_history_{timestamp}.json`](trajectory_history_{timestamp}.json) - Complete optimization trajectory\n"
+            section += f"- [`eval_train_{timestamp}.jsonl.repeat1`](eval_train_{timestamp}.jsonl.repeat1) - Training evaluation (repeat 1)\n"
+            section += f"- [`eval_train_{timestamp}.jsonl.repeat2`](eval_train_{timestamp}.jsonl.repeat2) - Training evaluation (repeat 2)\n\n"
+        else:
+            section += f"- `results/trajectory_history_{agent_id}.json` - Complete optimization trajectory\n"
+            section += "- `results/eval_train_*.jsonl.repeat*` - Evaluation results\n\n"
+
+        # Config snapshots
+        iterations = trajectory.get("iterations", [])
+        if iterations and timestamp:
+            section += "**Configuration Snapshots:**\n"
+            for idx, iteration in enumerate(iterations):
+                iter_num = iteration.get("iteration", idx + 1)
+                section += f"- Iteration {iter_num}:\n"
+                section += f"  - [`config_iteration_{iter_num}_suggested_{timestamp}.json`](configs/config_iteration_{iter_num}_suggested_{timestamp}.json) - AI-suggested configuration\n"
+                section += f"  - [`config_iteration_{iter_num}_final_{timestamp}.json`](configs/config_iteration_{iter_num}_final_{timestamp}.json) - Deployed configuration\n"
+            section += "\n"
+
+        # Charts
+        section += "**Visualizations:**\n"
+        section += "- [`charts/accuracy_over_time.png`](charts/accuracy_over_time.png) - Accuracy progression\n"
+        section += "- [`charts/metric_breakdown.png`](charts/metric_breakdown.png) - Metrics breakdown\n"
+        section += "- [`charts/improvement_deltas.png`](charts/improvement_deltas.png) - Iteration-to-iteration changes\n"
+        section += "- [`charts/question_heatmap.png`](charts/question_heatmap.png) - Per-question performance (if available)\n\n"
 
         # Reproduction commands
         section += "### Reproduction Commands\n\n"

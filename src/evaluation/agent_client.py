@@ -22,7 +22,14 @@ class AgentClient:
         self.location = location
         self.engine_id = engine_id
         self.agent_id = agent_id
-        self.base_url = f"https://discoveryengine.googleapis.com/v1alpha/projects/{project_id}/locations/{location}/collections/default_collection/engines/{engine_id}"
+        
+        # Use regional endpoint for non-global locations
+        if location == "global":
+            api_endpoint = "https://discoveryengine.googleapis.com"
+        else:
+            api_endpoint = f"https://{location}-discoveryengine.googleapis.com"
+        
+        self.base_url = f"{api_endpoint}/v1alpha/projects/{project_id}/locations/{location}/collections/default_collection/engines/{engine_id}"
         self.credentials, _ = google.auth.default()
 
     def _get_headers(self) -> Dict[str, str]:
@@ -63,6 +70,10 @@ class AgentClient:
         headers = self._get_headers()
 
         # CRITICAL: Include agentsSpec to route to Data Insights Agent
+        # The agentId can be either the numeric ID or the full resource name
+        # Try with full resource name first
+        agent_resource_name = f"projects/{self.project_id}/locations/{self.location}/collections/default_collection/engines/{self.engine_id}/assistants/default_assistant/agents/{self.agent_id}"
+        
         payload = {
             "session": session_name,
             "query": {
@@ -70,7 +81,7 @@ class AgentClient:
             },
             "agentsSpec": {
                 "agentSpecs": [
-                    {"agentId": self.agent_id}
+                    {"agentId": agent_resource_name}
                 ]
             }
         }

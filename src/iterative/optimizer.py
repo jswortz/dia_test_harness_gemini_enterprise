@@ -13,14 +13,14 @@ from typing import Dict, Any, Optional, List
 from pathlib import Path
 import json
 from .deployer import SingleAgentDeployer
-from .evaluator import SingleAgentEvaluator
+from .evaluator import SingleAgentEvaluator, get_vertex_ai_location
 from .tracker import TrajectoryTracker
 from .prompt_improver import PromptImprover
 from .config_analyzer import ConfigFieldAnalyzer
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-from evaluation.agent_client import AgentAuthorizationError
+from src.evaluation.agent_client import AgentAuthorizationError
 
 
 class IterativeOptimizer:
@@ -494,18 +494,21 @@ class IterativeOptimizer:
         print(f"{'='*80}\n")
 
         # Step 1: Initialize analyzers if needed
+        # Use Vertex AI-compatible location for AI components
+        vertex_location = get_vertex_ai_location(self.location)
+        
         if not self.config_analyzer:
             print("Initializing configuration field analyzer...")
             self.config_analyzer = ConfigFieldAnalyzer(
                 project_id=self.project_id,
-                location=self.location
+                location=vertex_location
             )
 
         if not self.improver:
             print("Initializing AI prompt improver...")
             self.improver = PromptImprover(
                 project_id=self.project_id,
-                location=self.location
+                location=vertex_location
             )
 
         # Step 2: Analyze which config fields should be modified

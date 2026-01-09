@@ -8,8 +8,7 @@ from .engine import TestEngine
 from dotenv import load_dotenv
 
 # Import iterative optimization components
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-from iterative.optimizer import IterativeOptimizer
+from src.iterative.optimizer import IterativeOptimizer
 
 load_dotenv()
 
@@ -154,7 +153,7 @@ def deploy(config_file):
     logger.info(f"  Config: {config.get('name', 'unknown')}")
 
     # Import deployer
-    from iterative.deployer import SingleAgentDeployer
+    from src.iterative.deployer import SingleAgentDeployer
 
     # Initialize deployer
     deployer = SingleAgentDeployer(

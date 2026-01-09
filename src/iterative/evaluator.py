@@ -17,10 +17,32 @@ import threading
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
-from evaluation.runner import TestRunner
-from evaluation.evaluator import SQLComparator, JudgementModel
-from evaluation.agent_client import AgentClient
-from evaluation.data_loader import GoldenSetLoader
+from src.evaluation.runner import TestRunner
+from src.evaluation.evaluator import SQLComparator, JudgementModel
+from src.evaluation.agent_client import AgentClient
+from src.evaluation.data_loader import GoldenSetLoader
+
+
+def get_vertex_ai_location(agent_location: str) -> str:
+    """
+    Maps agent location to a valid Vertex AI region.
+    
+    Agent locations like 'us', 'eu', 'asia' need to be mapped to specific
+    Vertex AI regions like 'us-central1', 'europe-west1', etc.
+    """
+    location_map = {
+        'us': 'us-central1',
+        'eu': 'europe-west1',
+        'asia': 'asia-southeast1',
+        'global': 'global',
+    }
+    
+    # If it's already a specific region (e.g., us-central1), return it
+    if agent_location in location_map:
+        return location_map[agent_location]
+    else:
+        # Assume it's already a valid region
+        return agent_location
 
 
 class SingleAgentEvaluator:
@@ -75,7 +97,9 @@ class SingleAgentEvaluator:
         self.loader = GoldenSetLoader()
         self.client = AgentClient(project_id, location, engine_id, agent_id)
         self.comparator = SQLComparator()
-        self.judge = JudgementModel(project_id, location)
+        # Use Vertex AI-compatible location for the judge model
+        vertex_location = get_vertex_ai_location(location)
+        self.judge = JudgementModel(project_id, vertex_location)
 
         # Create TestRunner
         self.runner = TestRunner(

@@ -51,22 +51,30 @@ class TrajectoryVisualizer:
         """Extract evaluation metrics from trajectory data.
 
         Returns:
-            List of evaluation results per iteration
+            List of evaluation results per iteration (train metrics)
         """
         iterations = self.trajectory_data.get("iterations", [])
         if not iterations:
             logger.warning("No iteration data found in trajectory")
             return []
 
-        # Extract evaluation section from each iteration
+        # Extract train evaluation metrics from each iteration
         evaluations = []
         for iteration in iterations:
             if "evaluation" in iteration:
-                eval_data = iteration["evaluation"].copy()
-                # Add iteration number and timestamp for context
-                eval_data["iteration"] = iteration.get("iteration", 0)
-                eval_data["timestamp"] = iteration.get("timestamp")
-                evaluations.append(eval_data)
+                eval_section = iteration["evaluation"]
+                # Get train metrics (primary dataset)
+                train_data = eval_section.get("train", {})
+                if train_data:
+                    eval_data = train_data.copy()
+                    # Add iteration number and timestamp for context
+                    eval_data["iteration"] = iteration.get("iteration", 0)
+                    eval_data["timestamp"] = iteration.get("timestamp")
+                    # Add test metrics if available
+                    if "test" in eval_section:
+                        eval_data["test_accuracy"] = eval_section["test"].get("accuracy", None)
+                        eval_data["test_metrics"] = eval_section["test"]
+                    evaluations.append(eval_data)
 
         if not evaluations:
             logger.warning("No evaluation data found in iterations")
@@ -121,6 +129,11 @@ class TrajectoryVisualizer:
             iteration = eval_data.get("iteration", len(iterations))
             accuracy = eval_data.get("accuracy", 0.0)
             std = eval_data.get("accuracy_std", 0.0)
+
+            # Convert from decimal to percentage if needed
+            if accuracy <= 1.0:
+                accuracy = accuracy * 100
+                std = std * 100
 
             iterations.append(iteration)
             accuracies.append(accuracy)
@@ -269,16 +282,21 @@ class TrajectoryVisualizer:
 
         for eval_data in evaluations:
             iteration = eval_data.get("iteration", len(iterations))
-            metrics = eval_data.get("metrics", {})
 
-            exact = metrics.get("exact_match", 0)
-            semantic = metrics.get("semantic_match", 0)
-            fail = metrics.get("failed", 0)
+            # Compute metrics from train data
+            total = eval_data.get("total_cases", 0)
+            correct = eval_data.get("correct", 0)
+            failed = total - correct
+
+            # For now, assume all correct are exact matches
+            # (semantic match breakdown not available in current data structure)
+            exact = correct
+            semantic = 0
 
             iterations.append(f"Iter {iteration}")
             exact_matches.append(exact)
             semantic_matches.append(semantic)
-            failures.append(fail)
+            failures.append(failed)
 
         fig, ax = plt.subplots(figsize=self.figsize)
 
@@ -442,6 +460,13 @@ class TrajectoryVisualizer:
         for i in range(1, len(evaluations)):
             prev_acc = evaluations[i - 1].get("accuracy", 0.0)
             curr_acc = evaluations[i].get("accuracy", 0.0)
+
+            # Convert from decimal to percentage if needed
+            if prev_acc <= 1.0:
+                prev_acc = prev_acc * 100
+            if curr_acc <= 1.0:
+                curr_acc = curr_acc * 100
+
             delta = curr_acc - prev_acc
 
             deltas.append(delta)
@@ -460,7 +485,7 @@ class TrajectoryVisualizer:
             ax.text(
                 bar.get_x() + bar.get_width() / 2.0,
                 height,
-                f"{delta:+.3f}",
+                f"{delta:+.2f}%",
                 ha="center",
                 va="bottom" if delta >= 0 else "top",
                 fontsize=9,
@@ -468,7 +493,7 @@ class TrajectoryVisualizer:
 
         ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
         ax.set_xlabel("Iteration Transition", fontsize=12)
-        ax.set_ylabel("Accuracy Change (Δ)", fontsize=12)
+        ax.set_ylabel("Accuracy Change (Δ%)", fontsize=12)
         ax.set_title("Iteration-to-Iteration Accuracy Improvements", fontsize=14, fontweight="bold")
         ax.grid(True, alpha=0.3, axis="y")
 
@@ -514,6 +539,12 @@ class TrajectoryVisualizer:
             test_acc = eval_data.get("test_accuracy", None)
 
             if test_acc is not None:
+                # Convert from decimal to percentage if needed
+                if train_acc <= 1.0:
+                    train_acc = train_acc * 100
+                if test_acc <= 1.0:
+                    test_acc = test_acc * 100
+
                 iterations.append(iteration)
                 train_accs.append(train_acc)
                 test_accs.append(test_acc)

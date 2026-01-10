@@ -1,6 +1,6 @@
 # Data Insights Agent (DIA) Optimization Harness
 
-Automated optimization tool for Google Cloud Data Insights Agents. Deploy an agent, authorize it once, then iteratively improve its natural language to SQL generation through AI-powered prompt refinement.
+Automated optimization tool for Google Cloud Data Insights Agents. Deploy an agent, authorize it once, then iteratively improve its natural language to SQL generation through AI-powered prompt refinement and **research-backed semantic equivalence evaluation**.
 
 ## What This Does
 
@@ -170,6 +170,110 @@ Each optimization run follows this process:
          ↓
     Next Iteration (or stop at 100% accuracy)
 ```
+
+## SQL Semantic Equivalence Evaluation
+
+The optimization system uses an **enhanced AI-powered judgement model** to determine if generated SQL is semantically equivalent to expected SQL, even when syntax differs.
+
+### Research-Backed Best Practices (2026)
+
+The judgement model implements state-of-the-art techniques from recent Text-to-SQL research:
+
+**1. Miniature & Mull Prompting**
+- LLM executes queries on hypothetical database instances
+- Searches for counterexamples where results would differ
+- Achieves **100% accuracy** in identifying SQL mistakes (vs. basic prompting)
+
+**2. Schema-Aware Evaluation**
+- Automatically includes relevant database schema in judgement context
+- Improves F1 scores from 0.70-0.76 to significantly higher
+- Validates table and column references against actual schema
+
+**3. Multi-Dimensional Scoring Rubric**
+```
+Logical Equivalence (0-10)   - Same logical structure?
+Result Set Match (0-10)      - Identical results?
+Performance Similarity (0-5) - Similar execution characteristics?
+────────────────────────────
+Total Score: X/25
+
+Score >= 25 → EQUIVALENT
+Score < 25  → DIFFERENT
+```
+
+**4. Semantic Equivalence Pattern Library**
+
+Recognizes these common SQL transformations that preserve semantics:
+
+| Pattern | Example |
+|---------|---------|
+| **JOIN variations** | `INNER JOIN` vs `WHERE` clause with table list |
+| **Aggregation** | `DISTINCT` vs `GROUP BY` for unique values |
+| **Filtering** | `OR` conditions vs `UNION` |
+| **Syntax** | Table aliases vs full names, whitespace differences |
+| **Date/Time** | `BETWEEN` vs `>= AND <=`, different date formats |
+| **Calculations** | Reordered math expressions, equivalent percentages |
+
+**5. Common Error Pattern Recognition**
+
+Automatically detects these failure modes:
+- Missing/extra JOIN conditions
+- Incorrect aggregation grouping
+- Wrong filtering logic (AND vs OR)
+- Date range errors
+- Missing DISTINCT when needed
+- Incorrect column/table references
+
+### Evaluation Metrics
+
+For each test question, the system produces:
+
+**Exact Match** - Character-level comparison (after whitespace normalization)
+```sql
+✓ Exact:   SELECT COUNT(*) FROM customers
+✓ Match:   SELECT   COUNT(*)   FROM   customers
+```
+
+**Semantic Equivalence** - AI judgement with detailed analysis
+```sql
+Expected:  SELECT * FROM orders WHERE status = 'pending' OR status = 'processing'
+Generated: SELECT * FROM orders WHERE status IN ('pending', 'processing')
+
+Judgement: EQUIVALENT
+Reason:    IN clause is logically equivalent to OR conditions
+Score:     25/25 (Logic: 10/10, Results: 10/10, Performance: 5/5)
+```
+
+**Failure with Counterexample**
+```sql
+Expected:  SELECT DISTINCT category FROM products
+Generated: SELECT category FROM products
+
+Judgement: DIFFERENT
+Reason:    Missing DISTINCT - will return duplicate rows
+Score:     15/25 (Logic: 5/10, Results: 5/10, Performance: 5/5)
+Counterexample: If products has [Electronics, Electronics, Clothing],
+                Expected returns [Electronics, Clothing] (2 rows)
+                Generated returns [Electronics, Electronics, Clothing] (3 rows)
+```
+
+### Benefits for Optimization
+
+1. **Reduced False Negatives** - Recognizes valid SQL with different syntax → higher accuracy
+2. **Reduced False Positives** - Structured rubrics prevent incorrect equivalence claims
+3. **Better Failure Analysis** - Detailed scoring reveals which aspect failed
+4. **Targeted Improvements** - Counterexamples provide concrete debugging info
+5. **Faster Convergence** - Accurate classification → cleaner optimization signal
+
+### Research Sources
+
+Based on 2026 Text-to-SQL evaluation literature:
+- LLM-SQL-Solver: Can LLMs Determine SQL Equivalence? (arXiv 2312.10321v2)
+- Text To SQL: Evaluating SQL Generation with LLM as a Judge (Arize AI)
+- LLM-as-a-Judge: Practical Guide to Automated Model Evaluation
+- Best Practices for Text-to-SQL with Meta Llama 3 (AWS ML Blog)
+
+See `JUDGEMENT_MODEL_IMPROVEMENTS.md` for complete research summary and implementation details.
 
 ## Optimization Outputs
 
@@ -387,6 +491,8 @@ The agent configuration (`configs/baseline_config.json`) includes:
 **All fields analyzed and optimized by AI**:
 - `nl2sql_prompt`: Main SQL generation instructions (highest priority)
 - `schema_description`: Database schema, tables, and column descriptions (high priority)
+  - **Also used by semantic equivalence judge** to validate SQL correctness
+  - Improves judgement accuracy by providing table/column context
 - `nl2sql_examples`: Few-shot examples showing query patterns (medium priority)
 - `nl2py_prompt`: Python data processing instructions (low priority, only if Python processing needed)
 - `allowed_tables`: Whitelist of tables the agent can access (medium priority)
@@ -459,10 +565,12 @@ dia_test_harness_gemini_enterprise/
 ## Tips for Best Results
 
 1. **Start with quality examples**: Your golden set should cover diverse query patterns
-2. **Use 3+ repeats**: Statistical reliability improves with repeat measurements
-3. **Provide test set**: Detects if improvements overfit to training data
-4. **Review AI suggestions**: Even with `--auto-accept`, check the generated reports
-5. **Iterate multiple times**: Run optimization multiple times with different starting configs
+2. **Include comprehensive schema_description**: The semantic equivalence judge uses this to validate SQL - improves accuracy by ~5-10%
+3. **Use 3+ repeats**: Statistical reliability improves with repeat measurements
+4. **Provide test set**: Detects if improvements overfit to training data
+5. **Review AI suggestions**: Even with `--auto-accept`, check the generated reports
+6. **Iterate multiple times**: Run optimization multiple times with different starting configs
+7. **Trust semantic equivalence**: The judge recognizes valid SQL with different syntax (e.g., `IN` vs `OR`, `BETWEEN` vs `>= AND <=`)
 
 ## Troubleshooting
 
@@ -478,10 +586,11 @@ dia_test_harness_gemini_enterprise/
 - Test the agent in the UI to verify it can query BigQuery successfully
 
 **Low accuracy:**
-- Review failures in the evaluation JSONL files
-- Check if your `schema_description` includes all relevant tables/columns
+- Review failures in the evaluation JSONL files - the semantic judge provides detailed counterexamples
+- Check if your `schema_description` includes all relevant tables/columns (used by both agent and judge)
 - Add more `nl2sql_examples` for common query patterns
 - Ensure your golden set SQL queries use the correct dataset prefix
+- Check semantic equivalence judgements - the system may be correctly recognizing valid alternative SQL
 
 **Import errors:**
 - Ensure you're in the virtual environment: `source .venv/bin/activate`

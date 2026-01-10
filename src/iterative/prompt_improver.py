@@ -222,10 +222,53 @@ Analyze the TRAINING failure patterns and generate an IMPROVED version of the NL
 
 **IMPORTANT:** You are analyzing ONLY training set data. Do not make assumptions about test set performance.
 
+**CRITICAL CONSTRAINTS FOR nl2sql_prompt FIELD:**
+
+1. **FIELD PURPOSE:** nl2sql_prompt contains NATURAL LANGUAGE INSTRUCTIONS for how to generate SQL.
+   - It should contain RULES, FORMULAS, GUIDELINES, and DECISION TREES
+   - It should NOT be replaced with SQL code snippets or templates
+
+2. **REQUIRED STRUCTURE:** The prompt MUST include these sections:
+   - Table and join rules
+   - Column naming conventions
+   - Aggregation logic (when to GROUP BY)
+   - Metric calculation formulas
+   - Special query patterns
+   - SQL validation guardrails
+
+3. **FORBIDDEN CHANGES:**
+   ❌ Replacing the entire prompt with SQL code snippets
+   ❌ Reducing prompt size by more than 30%
+   ❌ Removing existing instruction sections
+   ❌ Converting instructions to executable code
+   ❌ Replacing comprehensive rules with terse examples
+
+4. **ALLOWED CHANGES:**
+   ✅ Adding new instruction sections for newly identified patterns
+   ✅ Clarifying ambiguous or incomplete rules
+   ✅ Fixing incorrect formulas or logic
+   ✅ Adding SQL examples to ILLUSTRATE rules (not replace them)
+   ✅ Reorganizing sections for better clarity
+   ✅ Expanding instructions with more specific guidance
+
+5. **VALIDATION CHECKLIST (verify before returning):**
+   - [ ] Prompt is LONGER or similar length (unless removing redundancy)
+   - [ ] Contains instruction keywords: "MUST", "ALWAYS", "NEVER", "rule", "formula"
+   - [ ] SQL keywords (SELECT, FROM, WHERE) are in examples, not as main content
+   - [ ] All original sections are preserved or enhanced
+   - [ ] New sections ADD to existing guidance, don't replace it
+
+6. **IMPROVEMENT PATTERN:**
+   When you see a failure:
+   - Identify which RULE is missing or incomplete
+   - ADD or ENHANCE that rule in the appropriate section
+   - Provide SQL examples to ILLUSTRATE the rule
+   - DO NOT replace the entire prompt with the example
+
 **Guidelines:**
 1. Keep the overall structure and tone of the original prompt
 2. Add specific, actionable instructions to fix the identified issues
-3. Be concise - add only what's needed to address the failures
+3. Add comprehensive rules - thorough instructions are better than terse ones
 4. Maintain BigQuery SQL syntax compatibility
 5. Focus on root causes, not symptoms (e.g., if column over-selection is the issue, add instruction to select only requested fields)
 6. IMPORTANT: Preserve patterns from successful test cases - don't break what's already working
@@ -240,6 +283,7 @@ Analyze the TRAINING failure patterns and generate an IMPROVED version of the NL
 **Output Format:**
 Provide ONLY the improved prompt text without explanations or markdown formatting.
 The output should be a direct replacement for the current prompt.
+The output MUST be comprehensive natural language instructions, not SQL code.
 """
 
         return prompt

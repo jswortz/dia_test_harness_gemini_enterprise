@@ -3,6 +3,8 @@ import json
 import logging
 import os
 import sys
+import shutil
+from pathlib import Path
 from .agent_client import MockAgentClient, RealAgentClient
 from .engine import TestEngine
 from dotenv import load_dotenv
@@ -15,6 +17,96 @@ load_dotenv()
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def clear_results_directory():
+    """
+    Clear all prior results from the results/ directory.
+
+    Removes:
+    - trajectory_history_*.json files
+    - eval_train_*.jsonl files
+    - OPTIMIZATION_REPORT_*.md files
+    - charts/ directory
+    - configs/ directory
+    - run_* directories
+
+    Preserves:
+    - .gitkeep files
+    - README files
+    """
+    results_dir = Path("results")
+
+    if not results_dir.exists():
+        logger.info("Results directory does not exist. Nothing to clear.")
+        return
+
+    logger.info(f"\n{'='*80}")
+    logger.info("CLEARING PRIOR RESULTS")
+    logger.info(f"{'='*80}\n")
+
+    deleted_files = []
+    deleted_dirs = []
+    preserved_files = []
+
+    # Patterns to delete
+    delete_patterns = [
+        "trajectory_history_*.json",
+        "eval_train_*.jsonl*",
+        "eval_test_*.jsonl*",
+        "OPTIMIZATION_REPORT_*.md",
+        "config_iteration_*.json"
+    ]
+
+    # Directories to delete
+    delete_dirs = ["charts", "configs"]
+
+    # Delete matching files
+    for pattern in delete_patterns:
+        for file_path in results_dir.glob(pattern):
+            if file_path.is_file():
+                try:
+                    file_path.unlink()
+                    deleted_files.append(file_path.name)
+                    logger.info(f"  ✓ Deleted: {file_path.name}")
+                except Exception as e:
+                    logger.warning(f"  ✗ Failed to delete {file_path.name}: {e}")
+
+    # Delete run_* directories
+    for run_dir in results_dir.glob("run_*"):
+        if run_dir.is_dir():
+            try:
+                shutil.rmtree(run_dir)
+                deleted_dirs.append(run_dir.name)
+                logger.info(f"  ✓ Deleted directory: {run_dir.name}/")
+            except Exception as e:
+                logger.warning(f"  ✗ Failed to delete {run_dir.name}/: {e}")
+
+    # Delete specific subdirectories
+    for dir_name in delete_dirs:
+        dir_path = results_dir / dir_name
+        if dir_path.exists() and dir_path.is_dir():
+            try:
+                shutil.rmtree(dir_path)
+                deleted_dirs.append(dir_name)
+                logger.info(f"  ✓ Deleted directory: {dir_name}/")
+            except Exception as e:
+                logger.warning(f"  ✗ Failed to delete {dir_name}/: {e}")
+
+    # Count preserved files
+    for item in results_dir.iterdir():
+        if item.is_file() and item.name not in deleted_files:
+            preserved_files.append(item.name)
+
+    # Summary
+    logger.info(f"\n{'='*80}")
+    logger.info("CLEANUP SUMMARY")
+    logger.info(f"{'='*80}")
+    logger.info(f"Deleted {len(deleted_files)} files")
+    logger.info(f"Deleted {len(deleted_dirs)} directories")
+    if preserved_files:
+        logger.info(f"Preserved {len(preserved_files)} files: {', '.join(preserved_files)}")
+    logger.info(f"{'='*80}\n")
 
 @click.group()
 def cli():
@@ -242,14 +334,15 @@ def deploy(config_file):
         raise click.ClickException(str(e))
 
 @cli.command()
-@click.option('--config-file', type=click.Path(exists=True), required=True, help='Path to agent configuration JSON')
+@click.option('--config-file', type=click.Path(exists=True), default=None, help='Path to agent configuration JSON (optional - will fetch from deployed agent if not provided)')
 @click.option('--golden-set', type=click.Path(exists=True), required=True, help='Path to training set (golden set)')
 @click.option('--test-set', type=click.Path(exists=True), default=None, help='Optional path to held-out test set')
 @click.option('--max-iterations', default=10, help='Maximum number of optimization iterations')
 @click.option('--num-repeats', default=3, help='Number of times to repeat each test (default: 3)')
 @click.option('--max-workers', default=10, help='Maximum number of parallel workers for test execution (default: 10)')
 @click.option('--auto-accept', is_flag=True, help='Automatically approve all AI-suggested improvements')
-def optimize(config_file, golden_set, test_set, max_iterations, num_repeats, max_workers, auto_accept):
+@click.option('--clear-prior-results', is_flag=True, help='Clear all prior results before starting optimization')
+def optimize(config_file, golden_set, test_set, max_iterations, num_repeats, max_workers, auto_accept, clear_prior_results):
     """
     Run iterative optimization for a single agent.
 
@@ -274,38 +367,16 @@ def optimize(config_file, golden_set, test_set, max_iterations, num_repeats, max
     2. Authorize agent via Gemini Enterprise UI (one-time)
     3. Always:     dia-harness optimize --config-file configs/baseline_config.json --golden-set data/golden_set.json
     """
+    # Clear prior results if flag is set
+    if clear_prior_results:
+        clear_results_directory()
+
     if auto_accept:
         logger.info("AUTO-ACCEPT MODE ENABLED: Fully automated optimization")
 
     logger.info("Starting Iterative Agent Optimization...")
 
-    # Load configuration
-    with open(config_file, 'r') as f:
-        config_data = json.load(f)
-
-    # Handle both single config and multi-variant config files
-    if isinstance(config_data, list):
-        # Multi-variant config - extract first one or look for "baseline"
-        baseline_config = None
-        for cfg in config_data:
-            if cfg.get("name") == "baseline":
-                baseline_config = cfg
-                break
-        if not baseline_config:
-            baseline_config = config_data[0]  # Use first config if no baseline found
-        config = baseline_config
-    elif isinstance(config_data, dict):
-        # Check if it's a wrapped config
-        if "configs" in config_data:
-            configs_list = config_data["configs"]
-            config = configs_list[0] if configs_list else {}
-        else:
-            # Single config
-            config = config_data
-    else:
-        raise click.ClickException("Invalid config file format")
-
-    # Validate required environment variables
+    # Validate required environment variables first (needed for both config loading paths)
     project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
     location = os.getenv("DIA_LOCATION", "global")
     engine_id = os.getenv("DIA_ENGINE_ID")
@@ -320,6 +391,72 @@ def optimize(config_file, golden_set, test_set, max_iterations, num_repeats, max
         if not dataset_id:
             missing.append("BQ_DATASET_ID")
         raise click.ClickException(f"Missing required environment variables: {', '.join(missing)}")
+
+    # Load configuration - either from file or from deployed agent
+    if config_file:
+        # Load from file (original behavior)
+        logger.info(f"Loading configuration from file: {config_file}")
+        with open(config_file, 'r') as f:
+            config_data = json.load(f)
+
+        # Handle both single config and multi-variant config files
+        if isinstance(config_data, list):
+            # Multi-variant config - extract first one or look for "baseline"
+            baseline_config = None
+            for cfg in config_data:
+                if cfg.get("name") == "baseline":
+                    baseline_config = cfg
+                    break
+            if not baseline_config:
+                baseline_config = config_data[0]  # Use first config if no baseline found
+            config = baseline_config
+        elif isinstance(config_data, dict):
+            # Check if it's a wrapped config
+            if "configs" in config_data:
+                configs_list = config_data["configs"]
+                config = configs_list[0] if configs_list else {}
+            else:
+                # Single config
+                config = config_data
+        else:
+            raise click.ClickException("Invalid config file format")
+    else:
+        # Fetch from deployed agent
+        logger.info("No config file provided - fetching configuration from deployed agent...")
+
+        # Import deployer
+        from iterative.deployer import SingleAgentDeployer
+
+        # Initialize deployer
+        deployer = SingleAgentDeployer(
+            project_id=project_id,
+            location=location,
+            engine_id=engine_id,
+            dataset_id=dataset_id
+        )
+
+        # Find existing agent (prioritize DIA_AGENT_ID env var)
+        env_agent_id = os.getenv("DIA_AGENT_ID")
+        if env_agent_id:
+            logger.info(f"Using agent ID from .env: {env_agent_id}")
+            deployer.agent_id = env_agent_id
+            deployer.agent_name = f"projects/{project_id}/locations/{location}/collections/default_collection/engines/{engine_id}/assistants/default_assistant/agents/{env_agent_id}"
+        else:
+            raise click.ClickException(
+                "DIA_AGENT_ID environment variable must be set when not providing --config-file. "
+                "Run 'dia-harness deploy' first to deploy an agent."
+            )
+
+        # Fetch config from deployed agent
+        config = deployer.get_agent_config()
+        if not config:
+            raise click.ClickException(
+                f"Failed to fetch configuration from deployed agent {env_agent_id}. "
+                "Verify the agent exists and is accessible."
+            )
+
+        logger.info(f"✓ Successfully fetched configuration from deployed agent")
+        logger.info(f"  Config name: {config.get('name', 'unknown')}")
 
     logger.info(f"Configuration:")
     logger.info(f"  Project: {project_id}")

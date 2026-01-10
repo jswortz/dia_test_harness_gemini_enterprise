@@ -9,18 +9,20 @@ from .evaluator import SQLComparator, JudgementModel
 
 class TestRunner:
     def __init__(
-        self, 
-        loader: GoldenSetLoader, 
-        client: AgentClient, 
-        comparator: SQLComparator, 
+        self,
+        loader: GoldenSetLoader,
+        client: AgentClient,
+        comparator: SQLComparator,
         judge: JudgementModel,
-        output_path: str
+        output_path: str,
+        schema_description: str = ""
     ):
         self.loader = loader
         self.client = client
         self.comparator = comparator
         self.judge = judge
         self.output_path = output_path
+        self.schema_description = schema_description
         self.results = []
 
     def parse_response(self, raw_response: List[Dict]) -> Dict[str, str]:
@@ -161,7 +163,8 @@ class TestRunner:
                     generated_sql,
                     expected_sql,
                     thoughts=thoughts,
-                    agent_response=agent_response
+                    agent_response=agent_response,
+                    schema_info=self.schema_description
                 )
 
             latency = time.time() - start_time
@@ -252,7 +255,8 @@ class TestRunner:
                         generated_sql,
                         expected_sql,
                         thoughts=thoughts,
-                        agent_response=agent_response
+                        agent_response=agent_response,
+                        schema_info=self.schema_description
                     )
 
                 latency = time.time() - start_time

@@ -133,26 +133,36 @@ class SingleAgentDeployer:
         else:
             print(f"Failed to delete agent: {resp.status_code} - {resp.text}")
 
-    def _wait_for_lro(self, operation_name: str, timeout: int = 120):
+    def _wait_for_lro(self, operation_name: str, timeout: int = None):
         """
-        Wait for a Long-Running Operation (LRO) to complete.
+        Wait for a Long-Running Operation (LRO) to complete with exponential backoff.
 
         Args:
             operation_name: Full operation resource name
-            timeout: Maximum wait time in seconds (default: 120s)
+            timeout: Maximum wait time in seconds (default: from env DIA_LRO_TIMEOUT or 600s)
         """
+        # Get timeout from environment variable or use default
+        if timeout is None:
+            timeout = int(os.getenv("DIA_LRO_TIMEOUT", "600"))
+
+        # Enforce reasonable bounds (minimum 60s, maximum 3600s = 1 hour)
+        timeout = max(60, min(timeout, 3600))
         url = f"https://{self.host}/v1alpha/{operation_name}"
         start_time = time.time()
 
         print(f"Waiting for LRO: {operation_name.split('/')[-1]}...")
+        print(f"  Max timeout: {timeout}s ({timeout//60}m)")
 
         checks = 0
+        poll_interval = 5  # Start with 5 second polling
+        max_poll_interval = 30  # Cap at 30 seconds
+
         while time.time() - start_time < timeout:
             resp = requests.get(url, headers=self._get_headers())
             if resp.status_code != 200:
                 print(f"LRO check failed: {resp.status_code} - {resp.text[:200]}")
                 # Don't fail immediately - the operation might still complete
-                time.sleep(5)
+                time.sleep(poll_interval)
                 checks += 1
                 continue
 
@@ -164,24 +174,36 @@ class SingleAgentDeployer:
                 return False
 
             if data.get("done", False):
+                elapsed = int(time.time() - start_time)
                 # Check if there's a result or error in the response
                 if "error" in data:
-                    print(f"LRO completed with error: {data['error']}")
+                    print(f"LRO completed with error after {elapsed}s: {data['error']}")
                     return False
                 elif "response" in data:
-                    print("LRO completed successfully.")
+                    print(f"✓ LRO completed successfully ({elapsed}s)")
                     return True
                 else:
-                    print("LRO completed.")
+                    print(f"✓ LRO completed ({elapsed}s)")
                     return True
 
             checks += 1
-            # Print progress every 30 seconds (6 checks)
-            if checks % 6 == 0:
-                elapsed = int(time.time() - start_time)
-                print(f"  Still waiting... ({elapsed}s elapsed)")
+            elapsed = int(time.time() - start_time)
 
-            time.sleep(5)
+            # Print progress every 3 checks or every 30s, whichever comes first
+            if checks % 3 == 0 or elapsed % 30 < poll_interval:
+                remaining = timeout - elapsed
+                print(f"  ⏳ Still waiting... {elapsed}s elapsed, {remaining}s remaining")
+
+            # Exponential backoff: gradually increase poll interval
+            # Start at 5s, increase to 10s after 60s, 20s after 120s, cap at 30s
+            if elapsed > 120 and poll_interval < 20:
+                poll_interval = 20
+                print(f"  Increasing poll interval to {poll_interval}s")
+            elif elapsed > 60 and poll_interval < 10:
+                poll_interval = 10
+                print(f"  Increasing poll interval to {poll_interval}s")
+
+            time.sleep(poll_interval)
 
         print(f"\n⚠️  LRO timed out after {timeout}s")
         print("Checking if agent is actually deployed...")
@@ -335,8 +357,8 @@ class SingleAgentDeployer:
             if 'name' in resp_data and 'operations' in resp_data['name']:
                 operation_name = resp_data['name']
                 print(f"Deployment LRO started: {operation_name}")
-                # Wait for deployment to complete before using agent
-                lro_success = self._wait_for_lro(operation_name, timeout=120)
+                # Wait for deployment to complete before using agent (10 minute timeout)
+                lro_success = self._wait_for_lro(operation_name, timeout=600)
                 if lro_success:
                     print("✓ Agent deployed and ready!")
                 else:
@@ -453,10 +475,11 @@ class SingleAgentDeployer:
 
                 print("✓ PATCH successful")
 
-                # Check if LRO was returned
+                # Check if LRO was returned from PATCH
                 data = resp.json()
                 if "name" in data and "operations" in data["name"]:
-                    self._wait_for_lro(data["name"])
+                    print("PATCH returned LRO - waiting for completion...")
+                    self._wait_for_lro(data["name"], timeout=600)
 
                 # Deploy the agent to enable it after configuration update
                 print("\n🚀 Deploying updated agent...")
@@ -472,6 +495,16 @@ class SingleAgentDeployer:
                         return False
 
                 print("✅ Agent deployed and ready!")
+
+                # Verify the config was actually updated
+                if full_config:
+                    print("\n🔍 Verifying configuration was applied...")
+                    if self._verify_config_update(full_config):
+                        print("✓ Configuration verified - changes applied successfully")
+                    else:
+                        print("⚠️  Warning: Configuration verification inconclusive")
+                        print("   The PATCH succeeded, but couldn't verify all fields were updated")
+
                 return True
 
             except Exception as e:
@@ -517,6 +550,73 @@ class SingleAgentDeployer:
             print(f"  Error verifying agent: {e}")
             return False
 
+    def _verify_config_update(self, expected_config: Dict[str, Any]) -> bool:
+        """
+        Verify that the agent's configuration matches the expected configuration.
+
+        Args:
+            expected_config: The configuration that should have been applied
+
+        Returns:
+            bool: True if verification succeeds, False otherwise
+        """
+        if not self.agent_name:
+            return False
+
+        try:
+            # Fetch current agent config
+            url = f"https://{self.host}/v1alpha/{self.agent_name}"
+            resp = requests.get(url, headers=self._get_headers())
+
+            if resp.status_code != 200:
+                print(f"  Failed to fetch agent for verification: {resp.status_code}")
+                return False
+
+            agent_data = resp.json()
+            managed_def = agent_data.get("managedAgentDefinition", {})
+            data_science_config = managed_def.get("dataScienceAgentConfig", {})
+            nl_query_config = data_science_config.get("nlQueryConfig", {})
+
+            # Verify key fields
+            verifications = []
+
+            # Check prompt (most critical field)
+            expected_prompt = expected_config.get("nl2sql_prompt", "")
+            actual_prompt = nl_query_config.get("nl2sqlPrompt", "")
+            prompt_match = len(actual_prompt) == len(expected_prompt)
+            verifications.append(("nl2sql_prompt", prompt_match))
+            if not prompt_match:
+                print(f"  ⚠️  Prompt length mismatch: expected {len(expected_prompt)}, got {len(actual_prompt)}")
+
+            # Check schema description if provided
+            if expected_config.get("schema_description"):
+                expected_schema = expected_config["schema_description"]
+                actual_schema = nl_query_config.get("schemaDescription", "")
+                schema_match = len(actual_schema) == len(expected_schema)
+                verifications.append(("schema_description", schema_match))
+                if not schema_match:
+                    print(f"  ⚠️  Schema description length mismatch: expected {len(expected_schema)}, got {len(actual_schema)}")
+
+            # Check examples if provided
+            if expected_config.get("nl2sql_examples"):
+                expected_examples = expected_config["nl2sql_examples"]
+                actual_examples = nl_query_config.get("nl2sqlExamples", [])
+                examples_match = len(actual_examples) == len(expected_examples)
+                verifications.append(("nl2sql_examples", examples_match))
+                if not examples_match:
+                    print(f"  ⚠️  Examples count mismatch: expected {len(expected_examples)}, got {len(actual_examples)}")
+
+            # Overall verification
+            all_verified = all(match for _, match in verifications)
+            verified_count = sum(1 for _, match in verifications if match)
+
+            print(f"  Verified {verified_count}/{len(verifications)} config fields")
+            return all_verified
+
+        except Exception as e:
+            print(f"  Error during config verification: {e}")
+            return False
+
     def _deploy_agent(self) -> bool:
         """
         Deploy the agent (helper method for retry logic).
@@ -541,7 +641,7 @@ class SingleAgentDeployer:
             if 'name' in resp_data and 'operations' in resp_data['name']:
                 operation_name = resp_data['name']
                 print(f"Deployment LRO started: {operation_name}")
-                lro_success = self._wait_for_lro(operation_name, timeout=120)
+                lro_success = self._wait_for_lro(operation_name, timeout=600)
                 if lro_success:
                     print("✓ Deployment LRO completed")
                     return True
@@ -627,20 +727,35 @@ class SingleAgentDeployer:
 
             agent_data = resp.json()
 
-            # Extract relevant config fields
+            # Extract relevant config fields from the API response
+            # The API returns fields in camelCase format
+            managed_def = agent_data.get("managedAgentDefinition", {})
+            data_science_config = managed_def.get("dataScienceAgentConfig", {})
+            nl_query_config = data_science_config.get("nlQueryConfig", {})
+            tool_settings = managed_def.get("toolSettings", {})
+
+            # Extract config name from display name (e.g., "Data Agent - baseline" -> "baseline")
+            display_name = agent_data.get("displayName", "")
+            config_name = display_name.split(" - ")[-1] if " - " in display_name else "baseline"
+
             config = {
-                "display_name": agent_data.get("displayName", ""),
-                "nl2sql_prompt": agent_data.get("queryUnderstandingSpec", {}).get("nl2SqlPrompt", ""),
-                "nl2py_prompt": agent_data.get("queryUnderstandingSpec", {}).get("nl2PyPrompt"),
-                "tool_description": agent_data.get("assistantToolConfig", {}).get("toolDescription", ""),
-                "schema_description": agent_data.get("queryUnderstandingSpec", {}).get("schemaDescription", ""),
-                "nl2sql_examples": agent_data.get("queryUnderstandingSpec", {}).get("nl2SqlExamples", []),
-                "allowed_tables": agent_data.get("queryUnderstandingSpec", {}).get("allowedTables", []),
-                "blocked_tables": agent_data.get("queryUnderstandingSpec", {}).get("blockedTables", [])
+                "name": config_name,
+                "display_name": display_name,
+                "description": agent_data.get("description", ""),
+                "nl2sql_prompt": nl_query_config.get("nl2sqlPrompt", ""),
+                "nl2py_prompt": nl_query_config.get("nl2pyPrompt"),
+                "tool_description": tool_settings.get("toolDescription", ""),
+                "schema_description": nl_query_config.get("schemaDescription", ""),
+                "nl2sql_examples": nl_query_config.get("nl2sqlExamples", []),
+                "bq_project_id": data_science_config.get("bqProjectId", self.project_id),
+                "bq_dataset_id": data_science_config.get("bqDatasetId", self.dataset_id),
+                # Note: allowedTables and blockedTables are not supported by API
+                "params": {}  # Legacy field for backward compatibility
             }
 
             print(f"✓ Fetched config from deployed agent")
-            logging.info(f"Retrieved agent config: nl2sql_prompt={len(config['nl2sql_prompt'])} chars, "
+            logging.info(f"Retrieved agent config: name={config['name']}, "
+                        f"nl2sql_prompt={len(config['nl2sql_prompt'])} chars, "
                         f"examples={len(config.get('nl2sql_examples', []))}")
 
             return config

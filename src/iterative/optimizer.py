@@ -9,9 +9,10 @@ Coordinates:
 - User interaction for iteration control
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .deployer import SingleAgentDeployer
 from .evaluator import SingleAgentEvaluator, get_vertex_ai_location
@@ -22,6 +23,136 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 from evaluation.agent_client import AgentAuthorizationError
+
+
+def validate_prompt_improvement(
+    old_prompt: str,
+    new_prompt: str,
+    verbose: bool = True
+) -> Tuple[bool, str]:
+    """
+    Validates that prompt changes are sensible improvements.
+
+    Checks:
+    1. Size reduction limit (>30% reduction is suspicious)
+    2. Instruction vs. Code ratio (should be instructions, not SQL)
+    3. Key sections preserved (tables, joins, formulas, etc.)
+    4. Minimum prompt length (should be substantial)
+
+    Args:
+        old_prompt: Original prompt text
+        new_prompt: Suggested new prompt text
+        verbose: If True, log validation details
+
+    Returns:
+        Tuple[bool, str]: (is_valid, reason)
+    """
+    # Check 1: Size reduction limit (>30% reduction is suspicious)
+    size_change_pct = (len(new_prompt) - len(old_prompt)) / len(old_prompt) * 100
+
+    if size_change_pct < -30.0:
+        reason = f"Prompt size reduced by {abs(size_change_pct):.1f}% - likely corruption"
+        if verbose:
+            logging.warning(f"❌ Validation failed: {reason}")
+        return False, reason
+
+    # Check 2: Instruction vs. Code ratio
+    instruction_keywords = ['must', 'always', 'never', 'should', 'rule',
+                           'formula', 'when', 'if', 'critical', 'important']
+    sql_keywords = ['select', 'from', 'where', 'join', 'group by',
+                   'order by', 'union', 'with']
+
+    instruction_count = sum(new_prompt.lower().count(word) for word in instruction_keywords)
+    sql_count = sum(new_prompt.lower().count(word) for word in sql_keywords)
+
+    # If SQL keywords dominate (2x more than instructions), likely code not instructions
+    if sql_count > instruction_count * 2 and sql_count > 10:
+        reason = f"Prompt has {sql_count} SQL keywords vs {instruction_count} instruction keywords - appears to be code, not instructions"
+        if verbose:
+            logging.warning(f"❌ Validation failed: {reason}")
+        return False, reason
+
+    # Check 3: Key sections preserved
+    required_keywords = ['table', 'join', 'formula', 'metric', 'aggregat']
+    missing_sections = []
+
+    for keyword in required_keywords:
+        if keyword in old_prompt.lower() and keyword not in new_prompt.lower():
+            missing_sections.append(keyword)
+
+    if missing_sections:
+        reason = f"Critical sections removed: {', '.join(missing_sections)}"
+        if verbose:
+            logging.warning(f"❌ Validation failed: {reason}")
+        return False, reason
+
+    # Check 4: Minimum prompt length (should be substantial)
+    if len(new_prompt) < 500:
+        reason = f"Prompt too short ({len(new_prompt)} chars) - needs comprehensive instructions"
+        if verbose:
+            logging.warning(f"❌ Validation failed: {reason}")
+        return False, reason
+
+    # All checks passed
+    if verbose:
+        logging.info(f"✅ Prompt validation passed:")
+        logging.info(f"   Size change: {size_change_pct:+.1f}%")
+        logging.info(f"   Instruction keywords: {instruction_count}")
+        logging.info(f"   SQL keywords: {sql_count}")
+
+    return True, "Validation passed"
+
+
+def should_stop_early(iterations: List[Dict]) -> Tuple[bool, str]:
+    """
+    Determines if optimization should stop early.
+
+    Stops if:
+    1. Accuracy degraded >15pp from peak
+    2. No improvement for 3 consecutive iterations
+    3. Variance is increasing (instability)
+
+    Args:
+        iterations: List of iteration dictionaries with metrics
+
+    Returns:
+        Tuple[bool, str]: (should_stop, reason)
+    """
+    if len(iterations) < 3:
+        return False, ""
+
+    # Handle both single measurements (float) and repeated measurements (dict with mean/std)
+    def get_accuracy(it):
+        acc = it['metrics']['accuracy']
+        return acc['mean'] if isinstance(acc, dict) else acc
+
+    def get_std(it):
+        acc = it['metrics']['accuracy']
+        return acc.get('std', 0.0) if isinstance(acc, dict) else 0.0
+
+    accuracies = [get_accuracy(it) for it in iterations]
+    best_acc = max(accuracies)
+    current_acc = accuracies[-1]
+
+    # Stop if degraded significantly from peak
+    if current_acc < best_acc - 15.0:
+        return True, f"Accuracy {current_acc:.2f}% is >15pp below peak {best_acc:.2f}%"
+
+    # Stop if no improvement for 3 iterations
+    if len(iterations) >= 4:
+        last_3 = accuracies[-3:]
+        if last_3[-1] <= last_3[-2] <= last_3[-3]:
+            return True, "No improvement for 3 consecutive iterations"
+
+    # Stop if variance is increasing (instability) - only for repeated measurements
+    if len(iterations) >= 3:
+        recent_stds = [get_std(it) for it in iterations[-3:]]
+        # Only check variance if we have repeated measurements (std > 0)
+        if all(s > 0 for s in recent_stds):
+            if all(recent_stds[i] < recent_stds[i+1] for i in range(len(recent_stds)-1)):
+                return True, "Increasing variance detected - optimization becoming unstable"
+
+    return False, ""
 
 
 class IterativeOptimizer:
@@ -100,6 +231,11 @@ class IterativeOptimizer:
         self.current_params: Dict[str, Any] = {}
         self.current_config: Dict[str, Any] = config.copy()
         self.config_changes_description: str = ""  # Track all config changes
+
+        # Best config tracking for rollback
+        self.best_config: Optional[Dict[str, Any]] = None
+        self.best_accuracy: float = 0.0
+        self.best_iteration: int = 0
 
     def run(self):
         """
@@ -207,6 +343,33 @@ class IterativeOptimizer:
                     )
 
                     if config_changed:
+                        # Validate prompt improvement before deployment
+                        is_valid, validation_reason = validate_prompt_improvement(
+                            self.current_prompt,
+                            improved_prompt,
+                            verbose=True
+                        )
+
+                        if not is_valid:
+                            print(f"\n{'='*80}")
+                            print(f"❌ PROMPT VALIDATION FAILED")
+                            print(f"{'='*80}")
+                            print(f"Reason: {validation_reason}")
+                            print(f"\nReverting nl2sql_prompt to current version.")
+                            print(f"Other field improvements (if any) will still be applied.")
+                            print(f"{'='*80}\n")
+
+                            # Keep current prompt, update only other fields
+                            improved_prompt = self.current_prompt
+                            suggested_config["nl2sql_prompt"] = self.current_prompt
+
+                            # Log rejected prompt for debugging
+                            os.makedirs("results/rejected_prompts", exist_ok=True)
+                            with open(f"results/rejected_prompts/iteration_{iteration}.txt", 'w') as f:
+                                f.write(f"Validation failed: {validation_reason}\n\n")
+                                f.write(f"Rejected prompt:\n{suggested_config.get('nl2sql_prompt', '')}\n\n")
+                                f.write(f"Current prompt (kept):\n{self.current_prompt}\n")
+
                         # Save suggested config snapshot
                         self._save_config_snapshot(iteration, suggested_config, config_type="suggested")
 
@@ -294,6 +457,57 @@ class IterativeOptimizer:
                     )
                     self.tracker.save()
 
+                # Step 7.5: Check for rollback (if accuracy degraded significantly)
+                current_accuracy = self._extract_accuracy(metrics)
+
+                # Check if we should rollback (>5pp drop from best)
+                if self.best_config and current_accuracy < self.best_accuracy - 5.0:
+                    print(f"\n{'='*80}")
+                    print(f"⚠️  PERFORMANCE REGRESSION DETECTED")
+                    print(f"{'='*80}")
+                    print(f"Current accuracy: {current_accuracy:.2f}%")
+                    print(f"Best accuracy: {self.best_accuracy:.2f}% (Iteration {self.best_iteration})")
+                    print(f"Regression: {self.best_accuracy - current_accuracy:.2f} percentage points")
+                    print(f"\n🔄 ROLLING BACK to best configuration...")
+
+                    # Rollback to best config
+                    self.deployer.update_prompt(
+                        self.best_config['nl2sql_prompt'],
+                        full_config=self.best_config
+                    )
+
+                    # Update current config to best
+                    self.current_config = self.best_config.copy()
+                    self.current_prompt = self.best_config['nl2sql_prompt']
+
+                    # Mark this iteration as rollback in tracker
+                    if self.tracker.history['iterations']:
+                        self.tracker.history['iterations'][-1]['action'] = 'rollback'
+                        self.tracker.history['iterations'][-1]['rollback_to_iteration'] = self.best_iteration
+                        self.tracker.save()
+
+                    print(f"✅ Rolled back to Iteration {self.best_iteration} configuration")
+                    print(f"{'='*80}\n")
+
+                # Update best if current is better
+                if current_accuracy > self.best_accuracy:
+                    self.best_config = self.current_config.copy()
+                    self.best_accuracy = current_accuracy
+                    self.best_iteration = iteration
+                    print(f"\n🏆 New best accuracy: {self.best_accuracy:.2f}% (Iteration {iteration})\n")
+
+                # Step 7.6: Check for early stopping
+                stop_early, stop_reason = should_stop_early(self.tracker.history['iterations'])
+                if stop_early:
+                    print(f"\n{'='*80}")
+                    print(f"🛑 EARLY STOPPING")
+                    print(f"{'='*80}")
+                    print(f"Reason: {stop_reason}")
+                    print(f"Stopping at iteration {iteration}/{self.max_iterations}")
+                    print(f"Best accuracy achieved: {self.best_accuracy:.2f}% at iteration {self.best_iteration}")
+                    print(f"{'='*80}\n")
+                    break
+
                 # Step 8: Ask user to continue
                 if not self._ask_to_continue(iteration):
                     break
@@ -375,6 +589,33 @@ class IterativeOptimizer:
 
             print(f"\n✓ Using existing agent: {self.agent_id}\n")
 
+        # IMPORTANT: Apply initial config if provided via --config-file
+        # This ensures iteration 1 starts with the user-provided config, not the old deployed config
+        print(f"Applying initial configuration to agent...")
+
+        # Retry logic for initial config application (critical for baseline accuracy)
+        max_retries = 3
+        success = False
+        for attempt in range(1, max_retries + 1):
+            print(f"  Attempt {attempt}/{max_retries}...")
+            success = self.deployer.update_prompt(
+                new_prompt=self.current_prompt,
+                params=self.current_params,
+                full_config=self.current_config
+            )
+            if success:
+                print(f"✓ Initial config applied successfully\n")
+                break
+            elif attempt < max_retries:
+                import time
+                wait_time = 5 * attempt  # Exponential backoff: 5s, 10s, 15s
+                print(f"⚠️  Attempt {attempt} failed. Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+            else:
+                print(f"❌ ERROR: Failed to apply initial config after {max_retries} attempts.")
+                print(f"   The optimization will continue, but iteration 1 may use an old config.")
+                print(f"   Consider rerunning with a fresh deployment.\n")
+
         # Create evaluator now that we have agent_id
         self.evaluator = SingleAgentEvaluator(
             agent_id=self.agent_id,
@@ -383,7 +624,8 @@ class IterativeOptimizer:
             engine_id=self.engine_id,
             output_path=f"results/eval_train_{self.run_timestamp}.jsonl",
             timestamp=self.run_timestamp,
-            max_workers=self.max_workers
+            max_workers=self.max_workers,
+            schema_description=self.config.get("schema_description", "")
         )
 
     def _run_evaluation(self) -> tuple:
@@ -417,7 +659,8 @@ class IterativeOptimizer:
                 engine_id=self.engine_id,
                 output_path=f"results/eval_test_{self.run_timestamp}.jsonl",
                 timestamp=self.run_timestamp,
-                max_workers=self.max_workers
+                max_workers=self.max_workers,
+                schema_description=self.config.get("schema_description", "")
             )
 
         if self.num_repeats > 1:
@@ -449,7 +692,8 @@ class IterativeOptimizer:
                 engine_id=self.engine_id,
                 output_path=f"results/eval_test_{self.run_timestamp}.jsonl",
                 timestamp=self.run_timestamp,
-                max_workers=self.max_workers
+                max_workers=self.max_workers,
+                schema_description=self.config.get("schema_description", "")
             )
 
         # Execute both evaluations in parallel using ThreadPoolExecutor

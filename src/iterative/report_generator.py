@@ -34,6 +34,7 @@ class OptimizationReportGenerator:
         chart_paths: List[str],
         agent_id: str,
         iteration_count: Optional[int] = None,
+        run_id: Optional[str] = None,
     ) -> str:
         """Generate comprehensive optimization report.
 
@@ -42,6 +43,7 @@ class OptimizationReportGenerator:
             chart_paths: List of paths to generated chart images
             agent_id: ID of the agent being optimized
             iteration_count: Number of iterations (inferred if not provided)
+            run_id: Run timestamp ID (extracted from trajectory if not provided)
 
         Returns:
             Path to generated report file
@@ -50,9 +52,22 @@ class OptimizationReportGenerator:
         if iteration_count is None:
             iteration_count = len(trajectory_history.get("iterations", []))
 
+        # Extract run_id from trajectory history start_time if not provided
+        if run_id is None:
+            start_time = trajectory_history.get("start_time", "")
+            if start_time:
+                # Parse ISO format timestamp and convert to run_id format
+                try:
+                    dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                    run_id = dt.strftime("%Y%m%d_%H%M%S")
+                except:
+                    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            else:
+                run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
         # Build report sections
         sections = [
-            self._generate_header(agent_id, iteration_count),
+            self._generate_header(agent_id, iteration_count, run_id),
             self._generate_executive_summary(trajectory_history),
             self._generate_visualizations(chart_paths),
             self._generate_iteration_details(trajectory_history),
@@ -64,18 +79,18 @@ class OptimizationReportGenerator:
         # Combine all sections
         report_content = "\n\n".join(sections)
 
-        # Write to file
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        report_path = self.output_dir / f"OPTIMIZATION_REPORT_{timestamp}.md"
+        # Write to file using consistent run_id
+        report_path = self.output_dir / f"OPTIMIZATION_REPORT_{run_id}.md"
         report_path.write_text(report_content)
 
         return str(report_path)
 
-    def _generate_header(self, agent_id: str, iteration_count: int) -> str:
+    def _generate_header(self, agent_id: str, iteration_count: int, run_id: str) -> str:
         """Generate report header."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return f"""# Agent Optimization Report
 
+**Run ID:** `{run_id}`
 **Agent ID:** `{agent_id}`
 **Report Generated:** {timestamp}
 **Total Iterations:** {iteration_count}

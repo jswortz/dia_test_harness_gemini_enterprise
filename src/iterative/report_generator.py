@@ -262,7 +262,12 @@ class OptimizationReportGenerator:
                 continue
 
             # Use relative path from results directory
-            rel_path = path.name if path.parent.name == "results" else str(path)
+            # If path contains 'results/', extract everything after it
+            path_str = str(path)
+            if 'results/' in path_str:
+                rel_path = path_str.split('results/')[-1]
+            else:
+                rel_path = path.name
 
             # Infer chart title from filename
             title = path.stem.replace("_", " ").title()

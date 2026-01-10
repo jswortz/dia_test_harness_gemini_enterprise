@@ -27,8 +27,6 @@ class ConfigFieldAnalyzer:
     - schema_description: Database schema description
     - nl2sql_examples: Example question-SQL pairs
     - nl2py_prompt: Natural language to Python conversion prompt
-    - allowed_tables: Tables the agent can access
-    - blocked_tables: Tables the agent cannot access
     """
 
     ANALYZABLE_FIELDS = [
@@ -36,16 +34,14 @@ class ConfigFieldAnalyzer:
         "tool_description",
         "schema_description",
         "nl2sql_examples",
-        "nl2py_prompt",
-        "allowed_tables",
-        "blocked_tables"
+        "nl2py_prompt"
     ]
 
     def __init__(
         self,
         project_id: str,
         location: str = "us-central1",
-        model_name: str = "gemini-2.0-flash-exp"
+        model_name: str = "gemini-3-pro-preview"
     ):
         """
         Initialize the ConfigFieldAnalyzer.
@@ -172,14 +168,6 @@ Your task is to analyze test failures and recommend which configuration fields s
    - Modify when: Failures involve Python-based data processing or transformations
    - Priority: LOW - Only if Python processing is involved
 
-6. **allowed_tables**: Whitelist of tables the agent can query.
-   - Modify when: Agent needs access to additional tables
-   - Priority: MEDIUM - Controls data access scope
-
-7. **blocked_tables**: Blacklist of tables the agent should not query.
-   - Modify when: Agent queries inappropriate/sensitive tables
-   - Priority: MEDIUM - Controls data security
-
 ## Current Configuration
 
 {config_summary}
@@ -190,7 +178,7 @@ Your task is to analyze test failures and recommend which configuration fields s
 
 ## Your Task
 
-Analyze these failures and provide recommendations for EACH of the 7 configuration fields listed above.
+Analyze these failures and provide recommendations for EACH of the 4 configuration fields listed above.
 
 For each field, determine:
 1. **should_modify** (bool): Whether this field should be changed
@@ -233,24 +221,12 @@ Respond with ONLY a valid JSON object in this exact format (no markdown, no code
       "rationale": "explanation here",
       "priority": 1-5,
       "suggested_value": "new value if should_modify=true, otherwise empty string"
-    }},
-    "allowed_tables": {{
-      "should_modify": true/false,
-      "rationale": "explanation here",
-      "priority": 1-5,
-      "suggested_value": "new value if should_modify=true, otherwise empty string"
-    }},
-    "blocked_tables": {{
-      "should_modify": true/false,
-      "rationale": "explanation here",
-      "priority": 1-5,
-      "suggested_value": "new value if should_modify=true, otherwise empty string"
     }}
   }}
 }}
 
 IMPORTANT:
-- Provide recommendations for ALL 7 fields
+- Provide recommendations for ALL 4 fields
 - Be specific in rationale - reference actual failures
 - Suggested values should be actionable and concrete
 - Only output the JSON, nothing else

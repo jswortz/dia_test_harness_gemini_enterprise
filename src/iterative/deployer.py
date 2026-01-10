@@ -412,20 +412,11 @@ class SingleAgentDeployer:
                     }
                 }
 
-                # Table access control fields are not supported by the API - only update nlQueryConfig
+                # Only update nlQueryConfig fields during optimization
+                # Table access control (allowed_tables/blocked_tables) should remain static
                 update_mask_fields = ["managedAgentDefinition.dataScienceAgentConfig.nlQueryConfig"]
 
-                # NOTE: Removed table access control support - API doesn't recognize these fields
-                # if full_config:
-                #     data_science_config = payload["managed_agent_definition"]["data_science_agent_config"]
-                #     if full_config.get("allowed_tables") and len(full_config["allowed_tables"]) > 0:
-                #         data_science_config["allowedTables"] = full_config["allowed_tables"]
-                #         update_mask_fields.append("managedAgentDefinition.dataScienceAgentConfig.allowedTables")
-                #     if full_config.get("blocked_tables") and len(full_config["blocked_tables"]) > 0:
-                #         data_science_config["blockedTables"] = full_config["blocked_tables"]
-                #         update_mask_fields.append("managedAgentDefinition.dataScienceAgentConfig.blockedTables")
-
-                # PATCH with dynamic update mask (URL-encoded)
+                # PATCH with update mask (URL-encoded)
                 update_mask = ",".join(update_mask_fields)
                 encoded_mask = quote(update_mask, safe='')
                 url = f"https://{self.host}/v1alpha/{self.agent_name}?updateMask={encoded_mask}"

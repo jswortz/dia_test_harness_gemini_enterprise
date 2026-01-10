@@ -14,7 +14,7 @@ from pathlib import Path
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .deployer import SingleAgentDeployer
-from .evaluator import SingleAgentEvaluator
+from .evaluator import SingleAgentEvaluator, get_vertex_ai_location
 from .tracker import TrajectoryTracker
 from .prompt_improver import PromptImprover
 from .config_analyzer import ConfigFieldAnalyzer
@@ -200,9 +200,7 @@ class IterativeOptimizer:
                         self.current_config.get("tool_description") != self.config.get("tool_description") or
                         self.current_config.get("schema_description") != self.config.get("schema_description") or
                         self.current_config.get("nl2sql_examples") != self.config.get("nl2sql_examples") or
-                        self.current_config.get("nl2py_prompt") != self.config.get("nl2py_prompt") or
-                        self.current_config.get("allowed_tables") != self.config.get("allowed_tables") or
-                        self.current_config.get("blocked_tables") != self.config.get("blocked_tables")
+                        self.current_config.get("nl2py_prompt") != self.config.get("nl2py_prompt")
                     )
 
                     if config_changed:
@@ -339,28 +337,40 @@ class IterativeOptimizer:
         print("FINDING EXISTING AGENT")
         print(f"{'='*80}\n")
 
-        # Build expected display name from config
-        config_name = self.config.get("name", "baseline")
-        display_name = self.config.get("display_name", f"Data Agent - {config_name}")
+        # First priority: Use DIA_AGENT_ID from environment if set
+        env_agent_id = os.getenv("DIA_AGENT_ID")
+        if env_agent_id:
+            print(f"Using agent ID from .env: {env_agent_id}")
+            self.agent_id = env_agent_id
 
-        # Search for existing agent WITHOUT deploying
-        self.agent_id = self.deployer.find_existing_agent(display_name)
+            # Set deployer state for update_prompt to work
+            self.deployer.agent_id = env_agent_id
+            self.deployer.agent_name = f"projects/{self.project_id}/locations/{self.location}/collections/default_collection/engines/{self.engine_id}/assistants/default_assistant/agents/{env_agent_id}"
 
-        if not self.agent_id:
-            # Agent not found - cannot proceed
-            print(f"\n{'='*80}")
-            print("❌ ERROR: Agent Not Found")
-            print(f"{'='*80}\n")
-            print(f"No agent found with display name: {display_name}\n")
-            print(f"REQUIRED SETUP:")
-            print(f"1. Deploy the agent first:")
-            print(f"   dia-harness deploy --config-file {self.config.get('name', 'baseline')}_config.json\n")
-            print(f"2. Authorize via Gemini Enterprise UI (one-time)\n")
-            print(f"3. Then run this optimize command again\n")
-            print(f"{'='*80}\n")
-            raise ValueError(f"Agent not found: {display_name}. Run 'dia-harness deploy' first.")
+            print(f"✓ Using existing agent: {self.agent_id}\n")
+        else:
+            # Fallback: Search by display name
+            config_name = self.config.get("name", "baseline")
+            display_name = self.config.get("display_name", f"Data Agent - {config_name}")
 
-        print(f"\n✓ Using existing agent: {self.agent_id}\n")
+            print(f"Searching for existing agent: {display_name}")
+            self.agent_id = self.deployer.find_existing_agent(display_name)
+
+            if not self.agent_id:
+                # Agent not found - cannot proceed
+                print(f"\n{'='*80}")
+                print("❌ ERROR: Agent Not Found")
+                print(f"{'='*80}\n")
+                print(f"No agent found with display name: {display_name}\n")
+                print(f"REQUIRED SETUP:")
+                print(f"1. Deploy the agent first:")
+                print(f"   dia-harness deploy --config-file {self.config.get('name', 'baseline')}_config.json\n")
+                print(f"2. Authorize via Gemini Enterprise UI (one-time)\n")
+                print(f"3. Then run this optimize command again\n")
+                print(f"{'='*80}\n")
+                raise ValueError(f"Agent not found: {display_name}. Run 'dia-harness deploy' first.")
+
+            print(f"\n✓ Using existing agent: {self.agent_id}\n")
 
         # Create evaluator now that we have agent_id
         self.evaluator = SingleAgentEvaluator(
@@ -558,18 +568,21 @@ class IterativeOptimizer:
         print(f"{'='*80}\n")
 
         # Step 1: Initialize analyzers if needed
+        # Use Vertex AI-compatible location for AI components
+        vertex_location = get_vertex_ai_location(self.location)
+        
         if not self.config_analyzer:
             print("Initializing configuration field analyzer...")
             self.config_analyzer = ConfigFieldAnalyzer(
                 project_id=self.project_id,
-                location=self.location
+                location=vertex_location
             )
 
         if not self.improver:
             print("Initializing AI prompt improver...")
             self.improver = PromptImprover(
                 project_id=self.project_id,
-                location=self.location
+                location=vertex_location
             )
 
         # Step 2: Analyze which config fields should be modified

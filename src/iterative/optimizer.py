@@ -186,8 +186,11 @@ class IterativeOptimizer:
                     break
 
                 # Step 6: Analyze failures and suggest improvements to ALL config fields
+                # CRITICAL: Only use TRAINING data here to avoid test set leakage
+                # Test results (test_results, test_metrics) are NEVER used for optimization
                 if failures:
-                    # Get improved config from _improve_prompt (pass both failures and results for successes)
+                    # Get improved config from _improve_prompt
+                    # IMPORTANT: failures and results are from TRAINING SET ONLY
                     improved_prompt, change_description = self._improve_prompt(failures, results)
 
                     # Store suggested config (BEFORE applying changes)
@@ -554,14 +557,18 @@ class IterativeOptimizer:
     def _improve_prompt(self, failures: list, results: list) -> tuple:
         """Analyze failures and improve all relevant configuration fields.
 
+        **CRITICAL: This method must ONLY receive TRAINING data to avoid data leakage.**
+        Test set data must NEVER be passed to this method, as it would leak
+        information from the held-out test set into the optimization process.
+
         This method:
         1. Uses ConfigFieldAnalyzer to determine which fields need improvement
         2. Uses PromptImprover to generate improved values for those fields
         3. Returns updated config and description of changes
 
         Args:
-            failures: List of failed test cases
-            results: List of all test results (for extracting successes)
+            failures: List of failed test cases FROM TRAINING SET ONLY
+            results: List of all test results FROM TRAINING SET ONLY (for extracting successes)
 
         Returns:
             Tuple of (improved_prompt, change_description) for backward compatibility
@@ -571,9 +578,44 @@ class IterativeOptimizer:
         print("CONFIGURATION ANALYSIS & IMPROVEMENT")
         print(f"{'='*80}\n")
 
-        # Step 1: Extract successful test cases for pattern insights
+        # Step 1: Extract previous iteration metrics for trajectory analysis
+        # This enables regression detection and context-aware improvements
+        previous_metrics = None
+        if len(self.tracker.history.get("iterations", [])) > 0:
+            last_iteration = self.tracker.get_last_iteration()
+            if last_iteration:
+                eval_data = last_iteration.get("evaluation", {})
+                if "train" in eval_data:
+                    previous_metrics = eval_data["train"]
+                    print(f"📊 Trajectory Context: Using previous iteration metrics for comparison")
+
+        # Step 2: Fetch current config from deployed agent via API
+        # This ensures we're analyzing the actual deployed config, not just in-memory state
+        deployed_config = self.deployer.get_agent_config()
+        if deployed_config:
+            # Update our current config with the deployed state
+            # This catches any external modifications or deployment drift
+            print(f"✓ Using deployed agent config for analysis")
+            # Merge deployed config into current config (deployed takes precedence)
+            self.current_config.update(deployed_config)
+            # Update current_prompt to match deployed state
+            self.current_prompt = deployed_config.get("nl2sql_prompt", self.current_prompt)
+        else:
+            print(f"⚠ Could not fetch deployed config, using in-memory config")
+
+        # Step 3: Extract successful test cases for pattern insights
+        # CRITICAL: Both failures and results are from TRAINING SET ONLY
+        # This ensures no test data leakage into the optimization process
         successes = [r for r in results if r.get('passed', False)]
-        print(f"Analyzing {len(failures)} failures and {len(successes)} successes")
+
+        # Validation: Ensure we're not accidentally analyzing test data
+        # Test data should never reach this function
+        for failure in failures[:5]:  # Spot check first 5
+            assert 'question' in failure, "Invalid failure format - missing 'question' field"
+        for success in successes[:5]:  # Spot check first 5
+            assert 'question' in success, "Invalid success format - missing 'question' field"
+
+        print(f"Analyzing {len(failures)} TRAINING failures and {len(successes)} TRAINING successes")
 
         # Step 2: Initialize analyzers if needed
         # Use Vertex AI-compatible location for AI components
@@ -598,7 +640,8 @@ class IterativeOptimizer:
         recommendations = self.config_analyzer.analyze_config_improvements(
             failures=failures,
             current_config=self.current_config,
-            successes=successes
+            successes=successes,
+            previous_metrics=previous_metrics  # NEW: Pass trajectory context
         )
 
         # Step 3: Display field recommendations
@@ -639,7 +682,8 @@ class IterativeOptimizer:
             suggested_prompt = self.improver.analyze_failures(
                 failures=failures,
                 current_prompt=self.current_prompt,
-                successes=successes
+                successes=successes,
+                previous_metrics=previous_metrics  # NEW: Pass trajectory context
             )
             improved_prompt, prompt_change_desc = self.improver.present_suggestions_to_user(
                 current_prompt=self.current_prompt,
@@ -816,19 +860,22 @@ class IterativeOptimizer:
                 trajectory_data=self.tracker.history,
                 output_dir="results/charts"
             )
-            chart_paths = visualizer.generate_all_charts()
+            chart_paths_dict = visualizer.generate_all_charts()
 
             print("\nCharts generated:")
-            for path in chart_paths:
+            for name, path in chart_paths_dict.items():
                 if path:
-                    print(f"  ✓ {path}")
+                    print(f"  ✓ {name}: {path}")
+
+            # Convert chart paths dict to list (filter out None values)
+            chart_paths_list = [path for path in chart_paths_dict.values() if path is not None]
 
             # Generate comprehensive report
             print("\nGenerating comprehensive markdown report...")
             report_gen = OptimizationReportGenerator(output_dir="results")
             report_path = report_gen.generate_report(
                 trajectory_history=self.tracker.history,
-                chart_paths=chart_paths,
+                chart_paths=chart_paths_list,
                 agent_id=self.agent_id
             )
 

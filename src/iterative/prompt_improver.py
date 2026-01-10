@@ -45,15 +45,21 @@ class PromptImprover:
         self,
         failures: List[Dict],
         current_prompt: str,
-        successes: Optional[List[Dict]] = None
+        successes: Optional[List[Dict]] = None,
+        previous_metrics: Optional[Dict] = None
     ) -> str:
         """
         Analyze failure patterns and suggest prompt improvements.
 
+        **CRITICAL: This method must ONLY receive TRAINING data to avoid data leakage.**
+        All failures and successes MUST be from the training set. Test set data
+        must NEVER be passed to this method.
+
         Args:
-            failures: List of failed test cases with details
+            failures: List of failed test cases FROM TRAINING SET ONLY
             current_prompt: Current NL2SQL prompt text
-            successes: Optional list of successful test cases for pattern insights
+            successes: Optional list of successful test cases FROM TRAINING SET ONLY
+            previous_metrics: Optional previous iteration metrics for trajectory analysis
 
         Returns:
             str: Suggested improved prompt
@@ -65,9 +71,11 @@ class PromptImprover:
         print(f"\n=== Analyzing {len(failures)} Failures ===")
         if successes:
             print(f"Including {len(successes)} successful cases for pattern insights")
+        if previous_metrics:
+            print(f"Including previous iteration metrics for trajectory analysis")
 
-        # Build analysis prompt for LLM
-        analysis_prompt = self._build_analysis_prompt(failures, current_prompt, successes)
+        # Build analysis prompt for LLM with trajectory context
+        analysis_prompt = self._build_analysis_prompt(failures, current_prompt, successes, previous_metrics)
 
         # Generate suggestions
         print("Generating prompt improvement suggestions...")
@@ -98,7 +106,8 @@ class PromptImprover:
         self,
         failures: List[Dict],
         current_prompt: str,
-        successes: Optional[List[Dict]] = None
+        successes: Optional[List[Dict]] = None,
+        previous_metrics: Optional[Dict] = None
     ) -> str:
         """
         Build the prompt for LLM to analyze failures and suggest improvements.
@@ -107,10 +116,58 @@ class PromptImprover:
             failures: List of failed test cases
             current_prompt: Current NL2SQL prompt
             successes: Optional list of successful test cases
+            previous_metrics: Optional previous iteration metrics for trajectory analysis
 
         Returns:
             str: Analysis prompt for LLM
         """
+        # Build trajectory context section if previous metrics exist
+        trajectory_context = ""
+        if previous_metrics:
+            # Extract accuracy from previous metrics (handle both dict and float formats)
+            if isinstance(previous_metrics.get("accuracy"), dict):
+                prev_accuracy = previous_metrics["accuracy"].get("mean", 0.0)
+            else:
+                prev_accuracy = previous_metrics.get("accuracy", 0.0)
+
+            # Calculate current accuracy from failures and successes
+            total = len(failures) + (len(successes) if successes else 0)
+            current_correct = len(successes) if successes else 0
+            current_accuracy = (current_correct / total * 100.0) if total > 0 else 0.0
+
+            # Convert prev_accuracy to percentage if it's not already
+            if prev_accuracy <= 1.0:
+                prev_accuracy = prev_accuracy * 100.0
+
+            # Check for regression
+            if current_accuracy < prev_accuracy:
+                delta = prev_accuracy - current_accuracy
+                trajectory_context = f"""
+**⚠️ CRITICAL: PERFORMANCE REGRESSION DETECTED**
+- Previous iteration accuracy: {prev_accuracy:.2f}%
+- Current iteration accuracy: {current_accuracy:.2f}%
+- Regression: {delta:.2f}% (WORSE than before)
+
+This iteration performed WORSE than the previous one. Your task is to:
+1. Identify what changes in the prompt caused this regression
+2. Suggest fixes that recover previous performance while addressing new failures
+3. Consider recommending reverting recent changes if they were counterproductive
+4. Balance fixing new failures without sacrificing previously working cases
+
+**IMPORTANT**: The goal is to get back to at least {prev_accuracy:.2f}% accuracy.
+"""
+            else:
+                # Improvement or same - provide positive context
+                delta = current_accuracy - prev_accuracy
+                trajectory_context = f"""
+**📈 Trajectory Context:**
+- Previous iteration accuracy: {prev_accuracy:.2f}%
+- Current iteration accuracy: {current_accuracy:.2f}%
+- Change: {delta:+.2f}% {'(improvement)' if delta > 0 else '(no change)'}
+
+Continue improving while preserving what's working well.
+"""
+
         # Summarize failures
         failure_summary = []
         for i, failure in enumerate(failures, 1):
@@ -151,16 +208,19 @@ Use these successful patterns to understand what the agent is doing correctly an
 
 I'm optimizing a Data Insights Agent that converts natural language questions into BigQuery SQL queries.
 
+{trajectory_context}
 **Current NL2SQL Prompt:**
 ```
 {current_prompt}
 ```
 
-**Failed Test Cases:**
+**Failed Test Cases (TRAINING SET ONLY):**
 {failures_text}
 {success_text}
 **Your Task:**
-Analyze the failure patterns and generate an IMPROVED version of the NL2SQL prompt that addresses these specific issues.
+Analyze the TRAINING failure patterns and generate an IMPROVED version of the NL2SQL prompt that addresses these specific issues.
+
+**IMPORTANT:** You are analyzing ONLY training set data. Do not make assumptions about test set performance.
 
 **Guidelines:**
 1. Keep the overall structure and tone of the original prompt

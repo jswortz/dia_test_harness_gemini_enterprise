@@ -602,3 +602,50 @@ class SingleAgentDeployer:
     def get_agent_name(self) -> Optional[str]:
         """Get the full agent resource name."""
         return self.agent_name
+
+    def get_agent_config(self) -> Optional[Dict[str, Any]]:
+        """
+        Fetch the current configuration of the deployed agent from the API.
+
+        Returns:
+            Dictionary with agent configuration fields, or None if fetch fails
+        """
+        if not self.agent_name:
+            logging.error("No agent deployed yet. Call deploy_initial() or find_existing_agent() first.")
+            return None
+
+        print(f"\n📥 Fetching current config from deployed agent...")
+        agent_url = f"https://{self.host}/v1alpha/{self.agent_name}"
+
+        try:
+            resp = requests.get(agent_url, headers=self._get_headers())
+
+            if resp.status_code != 200:
+                logging.error(f"Failed to get agent config: {resp.status_code} - {resp.text[:500]}")
+                print(f"✗ Failed to fetch agent config: {resp.status_code}")
+                return None
+
+            agent_data = resp.json()
+
+            # Extract relevant config fields
+            config = {
+                "display_name": agent_data.get("displayName", ""),
+                "nl2sql_prompt": agent_data.get("queryUnderstandingSpec", {}).get("nl2SqlPrompt", ""),
+                "nl2py_prompt": agent_data.get("queryUnderstandingSpec", {}).get("nl2PyPrompt"),
+                "tool_description": agent_data.get("assistantToolConfig", {}).get("toolDescription", ""),
+                "schema_description": agent_data.get("queryUnderstandingSpec", {}).get("schemaDescription", ""),
+                "nl2sql_examples": agent_data.get("queryUnderstandingSpec", {}).get("nl2SqlExamples", []),
+                "allowed_tables": agent_data.get("queryUnderstandingSpec", {}).get("allowedTables", []),
+                "blocked_tables": agent_data.get("queryUnderstandingSpec", {}).get("blockedTables", [])
+            }
+
+            print(f"✓ Fetched config from deployed agent")
+            logging.info(f"Retrieved agent config: nl2sql_prompt={len(config['nl2sql_prompt'])} chars, "
+                        f"examples={len(config.get('nl2sql_examples', []))}")
+
+            return config
+
+        except Exception as e:
+            logging.error(f"Error fetching agent config: {e}", exc_info=True)
+            print(f"✗ Error fetching agent config: {e}")
+            return None

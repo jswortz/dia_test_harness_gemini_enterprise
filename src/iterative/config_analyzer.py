@@ -67,7 +67,8 @@ class ConfigFieldAnalyzer:
     def analyze_config_improvements(
         self,
         failures: List[Dict[str, Any]],
-        current_config: Dict[str, Any]
+        current_config: Dict[str, Any],
+        successes: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
         Analyze test failures and recommend configuration field improvements.
@@ -80,6 +81,7 @@ class ConfigFieldAnalyzer:
                 - error: Error message (if applicable)
                 - comparison_result: Result from SQL comparison
             current_config: Current agent configuration dictionary
+            successes: Optional list of successful test cases for pattern insights
 
         Returns:
             Dictionary with field recommendations in format:
@@ -96,9 +98,11 @@ class ConfigFieldAnalyzer:
             }
         """
         logger.info(f"Analyzing {len(failures)} failures for config improvements")
+        if successes:
+            logger.info(f"Including {len(successes)} successful cases for pattern insights")
 
         # Build the analysis prompt
-        prompt = self._build_analysis_prompt(failures, current_config)
+        prompt = self._build_analysis_prompt(failures, current_config, successes)
 
         try:
             # Generate analysis using Gemini
@@ -124,7 +128,8 @@ class ConfigFieldAnalyzer:
     def _build_analysis_prompt(
         self,
         failures: List[Dict[str, Any]],
-        current_config: Dict[str, Any]
+        current_config: Dict[str, Any],
+        successes: Optional[List[Dict[str, Any]]] = None
     ) -> str:
         """
         Build a comprehensive prompt for Gemini to analyze configuration improvements.
@@ -132,12 +137,16 @@ class ConfigFieldAnalyzer:
         Args:
             failures: List of test failures
             current_config: Current configuration
+            successes: Optional list of successful test cases
 
         Returns:
             Formatted prompt string
         """
         # Format failures for the prompt
         failures_summary = self._format_failures(failures)
+
+        # Format successes for the prompt
+        successes_summary = self._format_successes(successes) if successes else ""
 
         # Format current config values
         config_summary = self._format_current_config(current_config)
@@ -175,10 +184,11 @@ Your task is to analyze test failures and recommend which configuration fields s
 ## Test Failures to Analyze
 
 {failures_summary}
-
+{successes_summary}
 ## Your Task
 
 Analyze these failures and provide recommendations for EACH of the 4 configuration fields listed above.
+IMPORTANT: Use successful test cases to understand what patterns work well and should be preserved.
 
 For each field, determine:
 1. **should_modify** (bool): Whether this field should be changed
@@ -259,6 +269,36 @@ IMPORTANT:
             formatted.append(f"\n... and {len(failures) - 10} more failures")
 
         return "\n".join(formatted)
+
+    def _format_successes(self, successes: Optional[List[Dict[str, Any]]]) -> str:
+        """Format successful test cases for inclusion in the prompt."""
+        if not successes:
+            return ""
+
+        formatted = []
+        # Limit to first 5 successes to avoid prompt bloat
+        for i, success in enumerate(successes[:5], 1):
+            question = success.get("question", "N/A")
+            expected = success.get("expected_sql", "N/A")
+            generated = success.get("generated_sql", "N/A")
+
+            formatted.append(f"""
+### Success {i}
+- Question: {question}
+- Expected SQL: {expected}
+- Generated SQL: {generated}
+""")
+
+        if len(successes) > 5:
+            formatted.append(f"\n... and {len(successes) - 5} more successful cases")
+
+        return f"""
+## Successful Test Cases (showing what works well)
+
+{"".join(formatted)}
+
+Use these successful patterns to understand what the agent is doing correctly and preserve those capabilities.
+"""
 
     def _format_current_config(self, config: Dict[str, Any]) -> str:
         """Format current configuration for inclusion in the prompt."""

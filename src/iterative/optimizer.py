@@ -187,8 +187,8 @@ class IterativeOptimizer:
 
                 # Step 6: Analyze failures and suggest improvements to ALL config fields
                 if failures:
-                    # Get improved config from _improve_prompt
-                    improved_prompt, change_description = self._improve_prompt(failures)
+                    # Get improved config from _improve_prompt (pass both failures and results for successes)
+                    improved_prompt, change_description = self._improve_prompt(failures, results)
 
                     # Store suggested config (BEFORE applying changes)
                     suggested_config = self.current_config.copy()
@@ -551,13 +551,17 @@ class IterativeOptimizer:
                         for failure in comparison['new_failures']:
                             print(f"    - {failure['question']}")
 
-    def _improve_prompt(self, failures: list) -> tuple:
+    def _improve_prompt(self, failures: list, results: list) -> tuple:
         """Analyze failures and improve all relevant configuration fields.
 
         This method:
         1. Uses ConfigFieldAnalyzer to determine which fields need improvement
         2. Uses PromptImprover to generate improved values for those fields
         3. Returns updated config and description of changes
+
+        Args:
+            failures: List of failed test cases
+            results: List of all test results (for extracting successes)
 
         Returns:
             Tuple of (improved_prompt, change_description) for backward compatibility
@@ -567,10 +571,14 @@ class IterativeOptimizer:
         print("CONFIGURATION ANALYSIS & IMPROVEMENT")
         print(f"{'='*80}\n")
 
-        # Step 1: Initialize analyzers if needed
+        # Step 1: Extract successful test cases for pattern insights
+        successes = [r for r in results if r.get('passed', False)]
+        print(f"Analyzing {len(failures)} failures and {len(successes)} successes")
+
+        # Step 2: Initialize analyzers if needed
         # Use Vertex AI-compatible location for AI components
         vertex_location = get_vertex_ai_location(self.location)
-        
+
         if not self.config_analyzer:
             print("Initializing configuration field analyzer...")
             self.config_analyzer = ConfigFieldAnalyzer(
@@ -585,11 +593,12 @@ class IterativeOptimizer:
                 location=vertex_location
             )
 
-        # Step 2: Analyze which config fields should be modified
+        # Step 3: Analyze which config fields should be modified
         print("\nAnalyzing configuration fields...")
         recommendations = self.config_analyzer.analyze_config_improvements(
             failures=failures,
-            current_config=self.current_config
+            current_config=self.current_config,
+            successes=successes
         )
 
         # Step 3: Display field recommendations
@@ -627,7 +636,11 @@ class IterativeOptimizer:
         # Focus on nl2sql_prompt with PromptImprover (backward compatible)
         if "nl2sql_prompt" in fields_to_modify:
             print("\n--- Improving nl2sql_prompt ---")
-            suggested_prompt = self.improver.analyze_failures(failures, self.current_prompt)
+            suggested_prompt = self.improver.analyze_failures(
+                failures=failures,
+                current_prompt=self.current_prompt,
+                successes=successes
+            )
             improved_prompt, prompt_change_desc = self.improver.present_suggestions_to_user(
                 current_prompt=self.current_prompt,
                 suggested_prompt=suggested_prompt,

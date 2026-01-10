@@ -153,9 +153,9 @@ class TrajectoryVisualizer:
             )
 
         ax.set_xlabel("Iteration", fontsize=12)
-        ax.set_ylabel("Accuracy", fontsize=12)
+        ax.set_ylabel("Accuracy (%)", fontsize=12)
         ax.set_title("Accuracy Over Iterations", fontsize=14, fontweight="bold")
-        ax.set_ylim(0, 1.05)
+        ax.set_ylim(0, 105)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
 
@@ -229,9 +229,9 @@ class TrajectoryVisualizer:
             patch.set_alpha(0.7)
 
         ax.set_xlabel("Iteration", fontsize=12)
-        ax.set_ylabel("Accuracy", fontsize=12)
+        ax.set_ylabel("Accuracy (%)", fontsize=12)
         ax.set_title("Accuracy Distribution Across Iterations", fontsize=14, fontweight="bold")
-        ax.set_ylim(0, 1.05)
+        ax.set_ylim(0, 105)
         ax.grid(True, alpha=0.3, axis="y")
 
         plt.tight_layout()
@@ -544,9 +544,9 @@ class TrajectoryVisualizer:
         )
 
         ax.set_xlabel("Iteration", fontsize=12)
-        ax.set_ylabel("Accuracy", fontsize=12)
+        ax.set_ylabel("Accuracy (%)", fontsize=12)
         ax.set_title("Training vs Test Accuracy", fontsize=14, fontweight="bold")
-        ax.set_ylim(0, 1.05)
+        ax.set_ylim(0, 105)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
 

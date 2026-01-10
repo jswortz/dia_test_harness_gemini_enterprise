@@ -41,13 +41,19 @@ class PromptImprover:
         vertexai.init(project=project_id, location=location)
         self.model = GenerativeModel(model_name)
 
-    def analyze_failures(self, failures: List[Dict], current_prompt: str) -> str:
+    def analyze_failures(
+        self,
+        failures: List[Dict],
+        current_prompt: str,
+        successes: Optional[List[Dict]] = None
+    ) -> str:
         """
         Analyze failure patterns and suggest prompt improvements.
 
         Args:
             failures: List of failed test cases with details
             current_prompt: Current NL2SQL prompt text
+            successes: Optional list of successful test cases for pattern insights
 
         Returns:
             str: Suggested improved prompt
@@ -57,9 +63,11 @@ class PromptImprover:
             return current_prompt
 
         print(f"\n=== Analyzing {len(failures)} Failures ===")
+        if successes:
+            print(f"Including {len(successes)} successful cases for pattern insights")
 
         # Build analysis prompt for LLM
-        analysis_prompt = self._build_analysis_prompt(failures, current_prompt)
+        analysis_prompt = self._build_analysis_prompt(failures, current_prompt, successes)
 
         # Generate suggestions
         print("Generating prompt improvement suggestions...")
@@ -86,13 +94,19 @@ class PromptImprover:
 
         return suggested_prompt
 
-    def _build_analysis_prompt(self, failures: List[Dict], current_prompt: str) -> str:
+    def _build_analysis_prompt(
+        self,
+        failures: List[Dict],
+        current_prompt: str,
+        successes: Optional[List[Dict]] = None
+    ) -> str:
         """
         Build the prompt for LLM to analyze failures and suggest improvements.
 
         Args:
             failures: List of failed test cases
             current_prompt: Current NL2SQL prompt
+            successes: Optional list of successful test cases
 
         Returns:
             str: Analysis prompt for LLM
@@ -112,6 +126,27 @@ class PromptImprover:
 
         failures_text = "\n".join(failure_summary)
 
+        # Summarize successes (limit to 5 representative examples)
+        success_text = ""
+        if successes:
+            success_summary = []
+            # Sample up to 5 diverse successes
+            sample_size = min(5, len(successes))
+            sampled_successes = successes[:sample_size]
+
+            for i, success in enumerate(sampled_successes, 1):
+                summary = f"\n{i}. Question: \"{success.get('question', 'N/A')}\""
+                summary += f"\n   Expected SQL: {success.get('expected_sql', 'N/A')}"
+                summary += f"\n   Generated SQL: {success.get('generated_sql', 'N/A')}"
+                success_summary.append(summary)
+
+            success_text = f"""
+**Successful Test Cases (showing what works well):**
+{chr(10).join(success_summary)}
+
+Use these successful patterns to understand what the agent is doing correctly and preserve those capabilities.
+"""
+
         prompt = f"""You are an expert in prompt engineering for NL2SQL (Natural Language to SQL) systems.
 
 I'm optimizing a Data Insights Agent that converts natural language questions into BigQuery SQL queries.
@@ -123,7 +158,7 @@ I'm optimizing a Data Insights Agent that converts natural language questions in
 
 **Failed Test Cases:**
 {failures_text}
-
+{success_text}
 **Your Task:**
 Analyze the failure patterns and generate an IMPROVED version of the NL2SQL prompt that addresses these specific issues.
 
@@ -133,6 +168,7 @@ Analyze the failure patterns and generate an IMPROVED version of the NL2SQL prom
 3. Be concise - add only what's needed to address the failures
 4. Maintain BigQuery SQL syntax compatibility
 5. Focus on root causes, not symptoms (e.g., if column over-selection is the issue, add instruction to select only requested fields)
+6. IMPORTANT: Preserve patterns from successful test cases - don't break what's already working
 
 **Common Failure Patterns to Address:**
 - Column over-selection (SELECT * instead of specific columns)

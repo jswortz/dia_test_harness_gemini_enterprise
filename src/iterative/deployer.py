@@ -189,6 +189,13 @@ class SingleAgentDeployer:
             checks += 1
             elapsed = int(time.time() - start_time)
 
+            # Check if agent is actually deployed every 3 checks (even if LRO not done)
+            # This prevents unnecessary polling when agent is ready but LRO hasn't marked done=true
+            if checks % 3 == 0:
+                if self._verify_agent_deployed():
+                    print(f"✓ Agent is deployed and ready ({elapsed}s) - exiting early")
+                    return True
+
             # Print progress every 3 checks or every 30s, whichever comes first
             if checks % 3 == 0 or elapsed % 30 < poll_interval:
                 remaining = timeout - elapsed

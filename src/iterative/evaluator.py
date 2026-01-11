@@ -100,7 +100,18 @@ class SingleAgentEvaluator:
 
         # Initialize components
         self.loader = GoldenSetLoader()
-        self.client = AgentClient(project_id, location, engine_id, agent_id)
+
+        # Configure connection pool size to accommodate parallel workers
+        # Add buffer of 20 connections to handle retries and overhead
+        max_connections = max(100, max_workers + 20)
+
+        self.client = AgentClient(
+            project_id,
+            location,
+            engine_id,
+            agent_id,
+            max_connections=max_connections
+        )
         self.comparator = SQLComparator()
         # Use Vertex AI-compatible location for the judge model
         vertex_location = get_vertex_ai_location(location)

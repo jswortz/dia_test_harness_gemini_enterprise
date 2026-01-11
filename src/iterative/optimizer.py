@@ -557,16 +557,22 @@ class IterativeOptimizer:
         # First priority: Use DIA_AGENT_ID from environment if set
         env_agent_id = os.getenv("DIA_AGENT_ID")
         if env_agent_id:
-            print(f"Using agent ID from .env: {env_agent_id}")
-            self.agent_id = env_agent_id
+            print(f"Found DIA_AGENT_ID in environment: {env_agent_id}")
+            print(f"Verifying agent exists...")
 
-            # Set deployer state for update_prompt to work
-            self.deployer.agent_id = env_agent_id
-            self.deployer.agent_name = f"projects/{self.project_id}/locations/{self.location}/collections/default_collection/engines/{self.engine_id}/assistants/default_assistant/agents/{env_agent_id}"
+            # CRITICAL: Verify the agent actually exists before using it
+            if self.deployer.verify_agent_exists(env_agent_id):
+                self.agent_id = env_agent_id
+                print(f"✓ Agent verified and ready: {self.agent_id}")
+                print(f"  Display Name: {self.deployer.agent_display_name}\n")
+            else:
+                print(f"❌ ERROR: Agent ID {env_agent_id} from .env does not exist!")
+                print(f"  The agent may have been deleted or the ID is incorrect.\n")
+                print(f"  Falling back to search by display name...\n")
+                env_agent_id = None  # Clear and fall back to display name search
 
-            print(f"✓ Using existing agent: {self.agent_id}\n")
-        else:
-            # Fallback: Search by display name
+        # Fallback: Search by display name (if DIA_AGENT_ID not set or verification failed)
+        if not env_agent_id:
             config_name = self.config.get("name", "baseline")
             display_name = self.config.get("display_name", f"Data Agent - {config_name}")
 
@@ -587,7 +593,7 @@ class IterativeOptimizer:
                 print(f"{'='*80}\n")
                 raise ValueError(f"Agent not found: {display_name}. Run 'dia-harness deploy' first.")
 
-            print(f"\n✓ Using existing agent: {self.agent_id}\n")
+        print(f"\n✓ Using existing agent: {self.agent_id}\n")
 
         # IMPORTANT: Apply initial config if provided via --config-file
         # This ensures iteration 1 starts with the user-provided config, not the old deployed config

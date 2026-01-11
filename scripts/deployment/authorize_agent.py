@@ -13,7 +13,8 @@ import sys
 import json
 from dotenv import load_dotenv
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+# Add project root to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 from src.evaluation.agent_client import AgentClient
 
 load_dotenv()

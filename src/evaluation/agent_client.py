@@ -19,7 +19,25 @@ class AgentAuthorizationError(Exception):
 
 
 class AgentClient:
-    def __init__(self, project_id: str, location: str, engine_id: str, agent_id: str):
+    def __init__(
+        self,
+        project_id: str,
+        location: str,
+        engine_id: str,
+        agent_id: str,
+        max_connections: int = 100
+    ):
+        """
+        Initialize agent client with configurable connection pool.
+
+        Args:
+            project_id: Google Cloud project ID
+            location: Agent location (e.g., "global")
+            engine_id: Discovery Engine ID
+            agent_id: Agent ID
+            max_connections: Maximum number of concurrent connections to support (default: 100)
+                            Should be set to at least the number of parallel workers
+        """
         self.project_id = project_id
         self.location = location
         self.engine_id = engine_id
@@ -34,17 +52,16 @@ class AgentClient:
         self.base_url = f"{api_endpoint}/v1alpha/projects/{project_id}/locations/{location}/collections/default_collection/engines/{engine_id}"
         self.credentials, _ = google.auth.default()
 
-        # Configure session with larger connection pool to support high concurrency
-        # When running with many workers (e.g., 40), we need a larger pool to avoid
-        # "Connection pool is full, discarding connection" warnings
+        # Configure session with dynamic connection pool to support arbitrary concurrency
+        # pool_maxsize is set based on max_connections to avoid "Connection pool is full" warnings
         self.session = requests.Session()
 
         # Configure HTTPAdapter with pool size matching max workers
-        # pool_connections: number of connection pools to cache
+        # pool_connections: number of connection pools to cache (one per host)
         # pool_maxsize: maximum number of connections to save in the pool
         adapter = HTTPAdapter(
-            pool_connections=10,
-            pool_maxsize=100,  # Support up to 100 concurrent connections
+            pool_connections=10,  # Keep this at 10 (reasonable for caching per-host pools)
+            pool_maxsize=max_connections,  # Dynamic based on concurrent workers
             max_retries=Retry(
                 total=3,
                 backoff_factor=0.3,

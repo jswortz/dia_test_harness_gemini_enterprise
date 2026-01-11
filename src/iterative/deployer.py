@@ -667,6 +667,34 @@ class SingleAgentDeployer:
             logging.error(f"Deploy failed: {deploy_resp.status_code} - {deploy_resp.text}")
             return False
 
+    def verify_agent_exists(self, agent_id: str) -> bool:
+        """
+        Verify that an agent with the given ID exists.
+
+        Args:
+            agent_id: The agent ID to verify
+
+        Returns:
+            True if agent exists, False otherwise
+        """
+        agent_name = f"projects/{self.project_id}/locations/{self.location}/collections/default_collection/engines/{self.engine_id}/assistants/default_assistant/agents/{agent_id}"
+        url = f"https://{self.host}/v1alpha/{agent_name}"
+
+        try:
+            resp = requests.get(url, headers=self._get_headers())
+            if resp.status_code == 200:
+                # Agent exists - store the details
+                agent_data = resp.json()
+                self.agent_name = agent_name
+                self.agent_id = agent_id
+                self.agent_display_name = agent_data.get("displayName", "")
+                return True
+            else:
+                return False
+        except Exception as e:
+            logging.error(f"Error verifying agent existence: {e}")
+            return False
+
     def find_existing_agent(self, display_name: str) -> Optional[str]:
         """
         Find an existing agent by display name (no deployment).

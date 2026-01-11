@@ -1,7 +1,18 @@
 import logging
 import re
+import os
+
+# Configure connection pool size for Vertex AI SDK BEFORE importing
+# This sets urllib3's default maxsize for ALL PoolManagers
+os.environ.setdefault('URLLIB3_DEFAULT_POOL_SIZE', '200')
+
 import vertexai
 from vertexai.generative_models import GenerativeModel
+import urllib3
+
+# Set urllib3 default pool size to handle high concurrency
+# This affects all HTTPConnectionPool instances created after this point
+urllib3.poolmanager.PoolManager.DEFAULT_POOLSIZE = 200
 
 class SQLComparator:
     def compare(self, generated: str, expected: str) -> bool:
@@ -20,7 +31,18 @@ class SQLComparator:
 
 class JudgementModel:
     def __init__(self, project_id: str, location: str, model_name: str = "gemini-2.5-pro"):
-        # User requested global location for judgement model
+        """
+        Initialize JudgementModel.
+
+        Args:
+            project_id: Google Cloud project ID
+            location: Vertex AI location
+            model_name: Model to use for judgement (default: gemini-2.5-pro)
+
+        Note:
+            Connection pool is configured globally at module level (200 connections)
+            to handle high concurrency from parallel workers.
+        """
         vertexai.init(project=project_id, location=location)
         self.model = GenerativeModel(model_name)
 

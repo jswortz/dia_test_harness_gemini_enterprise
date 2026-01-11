@@ -103,56 +103,6 @@ def validate_prompt_improvement(
     return True, "Validation passed"
 
 
-def should_stop_early(iterations: List[Dict]) -> Tuple[bool, str]:
-    """
-    Determines if optimization should stop early.
-
-    Stops if:
-    1. Accuracy degraded >15pp from peak
-    2. No improvement for 3 consecutive iterations
-    3. Variance is increasing (instability)
-
-    Args:
-        iterations: List of iteration dictionaries with metrics
-
-    Returns:
-        Tuple[bool, str]: (should_stop, reason)
-    """
-    if len(iterations) < 3:
-        return False, ""
-
-    # Handle both single measurements (float) and repeated measurements (dict with mean/std)
-    def get_accuracy(it):
-        acc = it['metrics']['accuracy']
-        return acc['mean'] if isinstance(acc, dict) else acc
-
-    def get_std(it):
-        acc = it['metrics']['accuracy']
-        return acc.get('std', 0.0) if isinstance(acc, dict) else 0.0
-
-    accuracies = [get_accuracy(it) for it in iterations]
-    best_acc = max(accuracies)
-    current_acc = accuracies[-1]
-
-    # Stop if degraded significantly from peak
-    if current_acc < best_acc - 15.0:
-        return True, f"Accuracy {current_acc:.2f}% is >15pp below peak {best_acc:.2f}%"
-
-    # Stop if no improvement for 3 iterations
-    if len(iterations) >= 4:
-        last_3 = accuracies[-3:]
-        if last_3[-1] <= last_3[-2] <= last_3[-3]:
-            return True, "No improvement for 3 consecutive iterations"
-
-    # Stop if variance is increasing (instability) - only for repeated measurements
-    if len(iterations) >= 3:
-        recent_stds = [get_std(it) for it in iterations[-3:]]
-        # Only check variance if we have repeated measurements (std > 0)
-        if all(s > 0 for s in recent_stds):
-            if all(recent_stds[i] < recent_stds[i+1] for i in range(len(recent_stds)-1)):
-                return True, "Increasing variance detected - optimization becoming unstable"
-
-    return False, ""
 
 
 class IterativeOptimizer:
@@ -252,10 +202,15 @@ class IterativeOptimizer:
         from datetime import datetime
         self.run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+        # Create run-specific results folder for isolation
+        self.run_dir = Path(f"results/run_{self.run_timestamp}")
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+
         print(f"\n{'='*80}")
         print("ITERATIVE AGENT OPTIMIZATION")
         print(f"{'='*80}\n")
         print(f"Run ID: {self.run_timestamp}")
+        print(f"Run Directory: {self.run_dir}")
         print(f"Config: {self.config.get('name', 'baseline')}")
         print(f"Golden Set: {self.golden_set_path}")
         print(f"Max Iterations: {self.max_iterations}\n")
@@ -373,8 +328,9 @@ class IterativeOptimizer:
                             suggested_config["nl2sql_prompt"] = self.current_prompt
 
                             # Log rejected prompt for debugging
-                            os.makedirs("results/rejected_prompts", exist_ok=True)
-                            with open(f"results/rejected_prompts/iteration_{iteration}.txt", 'w') as f:
+                            rejected_prompts_dir = self.run_dir / "rejected_prompts"
+                            rejected_prompts_dir.mkdir(exist_ok=True)
+                            with open(rejected_prompts_dir / f"iteration_{iteration}.txt", 'w') as f:
                                 f.write(f"Validation failed: {validation_reason}\n\n")
                                 f.write(f"Rejected prompt:\n{suggested_config.get('nl2sql_prompt', '')}\n\n")
                                 f.write(f"Current prompt (kept):\n{self.current_prompt}\n")
@@ -505,19 +461,7 @@ class IterativeOptimizer:
                     self.best_iteration = iteration
                     print(f"\n🏆 New best accuracy: {self.best_accuracy:.2f}% (Iteration {iteration})\n")
 
-                # Step 7.6: Check for early stopping
-                stop_early, stop_reason = should_stop_early(self.tracker.history['iterations'])
-                if stop_early:
-                    print(f"\n{'='*80}")
-                    print(f"🛑 EARLY STOPPING")
-                    print(f"{'='*80}")
-                    print(f"Reason: {stop_reason}")
-                    print(f"Stopping at iteration {iteration}/{self.max_iterations}")
-                    print(f"Best accuracy achieved: {self.best_accuracy:.2f}% at iteration {self.best_iteration}")
-                    print(f"{'='*80}\n")
-                    break
-
-                # Step 8: Ask user to continue
+                # Step 7.6: Ask user to continue
                 if not self._ask_to_continue(iteration):
                     break
 
@@ -545,7 +489,8 @@ class IterativeOptimizer:
 
         self.tracker = TrajectoryTracker(
             agent_name=self.config.get("name", "baseline"),
-            timestamp=self.run_timestamp
+            timestamp=self.run_timestamp,
+            output_path=str(self.run_dir / f"trajectory_history_{self.run_timestamp}.json")
         )
 
         # Initialize prompt improver lazily (when first failure occurs)
@@ -637,7 +582,7 @@ class IterativeOptimizer:
             project_id=self.project_id,
             location=self.location,
             engine_id=self.engine_id,
-            output_path=f"results/eval_train_{self.run_timestamp}.jsonl",
+            output_path=str(self.run_dir / f"eval_train_{self.run_timestamp}.jsonl"),
             timestamp=self.run_timestamp,
             max_workers=self.max_workers,
             schema_description=self.config.get("schema_description", "")
@@ -672,7 +617,7 @@ class IterativeOptimizer:
                 project_id=self.project_id,
                 location=self.location,
                 engine_id=self.engine_id,
-                output_path=f"results/eval_test_{self.run_timestamp}.jsonl",
+                output_path=str(self.run_dir / f"eval_test_{self.run_timestamp}.jsonl"),
                 timestamp=self.run_timestamp,
                 max_workers=self.max_workers,
                 schema_description=self.config.get("schema_description", "")
@@ -705,7 +650,7 @@ class IterativeOptimizer:
                 project_id=self.project_id,
                 location=self.location,
                 engine_id=self.engine_id,
-                output_path=f"results/eval_test_{self.run_timestamp}.jsonl",
+                output_path=str(self.run_dir / f"eval_test_{self.run_timestamp}.jsonl"),
                 timestamp=self.run_timestamp,
                 max_workers=self.max_workers,
                 schema_description=self.config.get("schema_description", "")
@@ -1026,7 +971,7 @@ class IterativeOptimizer:
             config: Configuration to save
             config_type: Type of config ("final" or "suggested")
         """
-        config_dir = Path("results/configs")
+        config_dir = self.run_dir / "configs"
         config_dir.mkdir(parents=True, exist_ok=True)
 
         config_path = config_dir / f"config_iteration_{iteration}_{config_type}_{self.run_timestamp}.json"
@@ -1099,7 +1044,7 @@ class IterativeOptimizer:
         print(f"\nAccuracy Progression: {summary['accuracy_progression']}")
         print(f"Overall Improvement: {summary['overall_improvement']}%")
 
-        print(f"\nTrajectory saved to: results/trajectory_history.json")
+        print(f"\nTrajectory saved to: {self.tracker.output_path}")
         print(f"Agent ID: {self.agent_id}")
 
     def _generate_artifacts(self):
@@ -1115,9 +1060,10 @@ class IterativeOptimizer:
 
             # Generate charts
             print("Generating visualization charts...")
+            charts_dir = self.run_dir / "charts"
             visualizer = TrajectoryVisualizer(
                 trajectory_data=self.tracker.history,
-                output_dir="results/charts"
+                output_dir=str(charts_dir)
             )
             chart_paths_dict = visualizer.generate_all_charts()
 
@@ -1131,7 +1077,7 @@ class IterativeOptimizer:
 
             # Generate comprehensive report
             print("\nGenerating comprehensive markdown report...")
-            report_gen = OptimizationReportGenerator(output_dir="results")
+            report_gen = OptimizationReportGenerator(output_dir=str(self.run_dir))
             report_path = report_gen.generate_report(
                 trajectory_history=self.tracker.history,
                 chart_paths=chart_paths_list,
@@ -1140,7 +1086,7 @@ class IterativeOptimizer:
 
             print(f"\n{'='*80}")
             print(f"📊 Full optimization report: {report_path}")
-            print(f"📈 Charts directory: results/charts/")
+            print(f"📈 Charts directory: {charts_dir}")
             print(f"{'='*80}\n")
 
         except ImportError as e:

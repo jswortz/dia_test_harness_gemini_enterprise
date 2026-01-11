@@ -226,6 +226,10 @@ Your task is to analyze test failures and recommend which configuration fields s
 4. **nl2sql_examples**: Few-shot examples showing question→SQL pairs for pattern learning.
    - Modify when: Agent needs examples of specific query patterns it's failing on
    - Priority: MEDIUM - Helps with specific patterns
+   - **FORMAT REQUIREMENT**: Must be a JSON array of objects, each with:
+     * "query": string (natural language question)
+     * "expectedSql": string (SQL query)
+     * "expectedResponse": string (optional - expected answer text)
 
 5. **nl2py_prompt**: System prompt for natural language to Python conversion (for data manipulation).
    - Modify when: Failures involve Python-based data processing or transformations
@@ -318,7 +322,7 @@ Respond with ONLY a valid JSON object in this exact format (no markdown, no code
       "should_modify": true/false,
       "rationale": "explanation here",
       "priority": 1-5,
-      "suggested_value": "new value if should_modify=true, otherwise empty string"
+      "suggested_value": [] // ARRAY of example objects (each with "query", "expectedSql", "expectedResponse" keys) if should_modify=true, otherwise empty array
     }},
     "nl2py_prompt": {{
       "should_modify": true/false,
@@ -453,7 +457,7 @@ Use these successful TRAINING patterns to understand what the agent is doing cor
                         "should_modify": False,
                         "rationale": "No recommendation generated",
                         "priority": 1,
-                        "suggested_value": ""
+                        "suggested_value": "" if field != "nl2sql_examples" else []
                     }
                 else:
                     # Ensure all required keys exist
@@ -465,7 +469,27 @@ Use these successful TRAINING patterns to understand what the agent is doing cor
                     if "priority" not in rec:
                         rec["priority"] = 1
                     if "suggested_value" not in rec:
-                        rec["suggested_value"] = ""
+                        rec["suggested_value"] = "" if field != "nl2sql_examples" else []
+
+                    # Special handling for nl2sql_examples: ensure it's a list
+                    if field == "nl2sql_examples" and rec.get("should_modify", False):
+                        suggested_value = rec.get("suggested_value", [])
+                        # If it's a string (LLM returned JSON as string), try to parse it
+                        if isinstance(suggested_value, str) and suggested_value.strip():
+                            try:
+                                parsed = json.loads(suggested_value)
+                                if isinstance(parsed, list):
+                                    rec["suggested_value"] = parsed
+                                    logger.info(f"Parsed nl2sql_examples from JSON string to list ({len(parsed)} examples)")
+                                else:
+                                    logger.warning(f"nl2sql_examples suggested_value is not a list after parsing: {type(parsed)}")
+                                    rec["suggested_value"] = []
+                            except json.JSONDecodeError:
+                                logger.warning(f"Failed to parse nl2sql_examples suggested_value as JSON: {suggested_value[:100]}")
+                                rec["suggested_value"] = []
+                        elif not isinstance(suggested_value, list):
+                            logger.warning(f"nl2sql_examples suggested_value is not a list: {type(suggested_value)}")
+                            rec["suggested_value"] = []
 
             return recommendations
 
@@ -489,7 +513,7 @@ Use these successful TRAINING patterns to understand what the agent is doing cor
                     "should_modify": False,
                     "rationale": "Analysis failed - no recommendation available",
                     "priority": 1,
-                    "suggested_value": ""
+                    "suggested_value": "" if field != "nl2sql_examples" else []
                 }
                 for field in self.ANALYZABLE_FIELDS
             }

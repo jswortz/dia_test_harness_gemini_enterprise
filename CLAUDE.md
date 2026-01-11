@@ -141,6 +141,38 @@ All optimization runs generate timestamped artifacts (format: `YYYYMMDD_HHMMSS`)
 
 **Run ID**: Displayed at start of optimization, used consistently across all files.
 
+### Data Leakage Prevention
+
+**CRITICAL: The optimization system is designed to NEVER leak test data into improvement decisions.**
+
+The iterative optimizer follows strict data separation principles:
+
+1. **Training Set Usage**:
+   - ONLY training set failures and successes are analyzed for improvement feedback
+   - AI improvement suggestions (PromptImprover, ConfigFieldAnalyzer) receive ONLY training data
+   - All optimization decisions are based on training performance
+
+2. **Test Set Usage**:
+   - Test set is evaluated in parallel but kept strictly separate
+   - Test metrics are ONLY used for:
+     - Display/reporting purposes
+     - Overfitting detection warnings
+     - Final performance validation
+   - Test data is NEVER passed to improvement functions
+
+3. **Implementation Safeguards**:
+   - Explicit docstring warnings in all improvement functions
+   - Comments marking training-only data flow
+   - Validation checks to catch accidental test data usage
+   - Clear separation in code between train/test evaluation paths
+
+4. **Files with Safeguards**:
+   - `src/iterative/optimizer.py`: Main orchestration with explicit train/test separation
+   - `src/iterative/prompt_improver.py`: Training-only prompt improvement
+   - `src/iterative/config_analyzer.py`: Training-only config field analysis
+
+**Why This Matters**: Leaking test data into optimization would invalidate test set metrics as an unbiased estimate of generalization performance. The system must optimize on training data only and use test data purely for held-out evaluation.
+
 #### Traditional Evaluation
 
 ```bash

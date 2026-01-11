@@ -13,6 +13,8 @@ import sys
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import time
+import random
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
@@ -63,7 +65,8 @@ class SingleAgentEvaluator:
         engine_id: str,
         output_path: str = None,
         timestamp: str = None,
-        max_workers: int = 10
+        max_workers: int = 10,
+        schema_description: str = None
     ):
         """
         Initialize evaluator.
@@ -76,12 +79,14 @@ class SingleAgentEvaluator:
             output_path: Path to save evaluation results (auto-generated with timestamp if None)
             timestamp: Timestamp string for filenames (auto-generated if None)
             max_workers: Maximum number of parallel workers for test execution (default: 10)
+            schema_description: Database schema description for context in judgement (optional but recommended)
         """
         self.agent_id = agent_id
         self.project_id = project_id
         self.location = location
         self.engine_id = engine_id
         self.max_workers = max_workers
+        self.schema_description = schema_description or ""
 
         # Generate timestamped filename if not provided
         if output_path is None:
@@ -101,13 +106,14 @@ class SingleAgentEvaluator:
         vertex_location = get_vertex_ai_location(location)
         self.judge = JudgementModel(project_id, vertex_location)
 
-        # Create TestRunner
+        # Create TestRunner with schema description
         self.runner = TestRunner(
             loader=self.loader,
             client=self.client,
             comparator=self.comparator,
             judge=self.judge,
-            output_path=output_path
+            output_path=output_path,
+            schema_description=self.schema_description
         )
 
         # Thread-safe lock for result aggregation
@@ -151,27 +157,64 @@ class SingleAgentEvaluator:
         self,
         test_case: Dict,
         repeat_num: int,
-        test_idx: int
+        test_idx: int,
+        max_retries: int = 3,
+        initial_backoff: float = 1.0
     ) -> Dict:
         """
         Run a single test case with isolated session (for parallel execution).
+
+        Includes exponential backoff retry logic for transient errors.
 
         Args:
             test_case: Dict with 'nl_question', 'expected_sql', 'question_id'
             repeat_num: Which repeat this is (1, 2, 3, ...)
             test_idx: Index of test in golden set (for ordering)
+            max_retries: Maximum number of retry attempts (default: 3)
+            initial_backoff: Initial backoff time in seconds (default: 1.0)
 
         Returns:
             Dict with test result tagged with repeat_num
         """
-        # Use runner's run_single_test method
-        result = self.runner.run_single_test(test_case, session_id=None)
+        last_exception = None
 
-        # Tag with repeat number
-        result['repeat_num'] = repeat_num
-        result['test_idx'] = test_idx
+        for attempt in range(max_retries):
+            try:
+                # Use runner's run_single_test method
+                result = self.runner.run_single_test(test_case, session_id=None)
 
-        return result
+                # Tag with repeat number
+                result['repeat_num'] = repeat_num
+                result['test_idx'] = test_idx
+
+                return result
+
+            except Exception as e:
+                last_exception = e
+
+                # Check if this is a retryable error
+                error_str = str(e).lower()
+                is_retryable = any(keyword in error_str for keyword in [
+                    'timeout', 'connection', 'unavailable', 'deadline',
+                    'rate limit', 'quota', '429', '503', '504', '500'
+                ])
+
+                if not is_retryable or attempt == max_retries - 1:
+                    # Not retryable or final attempt - raise the error
+                    raise
+
+                # Calculate backoff with jitter (exponential backoff + randomization)
+                backoff_time = initial_backoff * (2 ** attempt)
+                jitter = random.uniform(0, backoff_time * 0.1)  # Add up to 10% jitter
+                sleep_time = backoff_time + jitter
+
+                print(f"  Retry {attempt + 1}/{max_retries} for '{test_case.get('nl_question', 'unknown')}' "
+                      f"after {sleep_time:.1f}s (error: {type(e).__name__})")
+
+                time.sleep(sleep_time)
+
+        # Should not reach here, but raise last exception if we do
+        raise last_exception
 
     def evaluate_with_repeats(
         self,

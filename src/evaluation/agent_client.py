@@ -1,6 +1,8 @@
 import json
 import logging
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import google.auth
 from google.auth.transport.requests import Request
 from typing import Dict, Any, Optional
@@ -22,15 +24,37 @@ class AgentClient:
         self.location = location
         self.engine_id = engine_id
         self.agent_id = agent_id
-        
+
         # Use regional endpoint for non-global locations
         if location == "global":
             api_endpoint = "https://discoveryengine.googleapis.com"
         else:
             api_endpoint = f"https://{location}-discoveryengine.googleapis.com"
-        
+
         self.base_url = f"{api_endpoint}/v1alpha/projects/{project_id}/locations/{location}/collections/default_collection/engines/{engine_id}"
         self.credentials, _ = google.auth.default()
+
+        # Configure session with larger connection pool to support high concurrency
+        # When running with many workers (e.g., 40), we need a larger pool to avoid
+        # "Connection pool is full, discarding connection" warnings
+        self.session = requests.Session()
+
+        # Configure HTTPAdapter with pool size matching max workers
+        # pool_connections: number of connection pools to cache
+        # pool_maxsize: maximum number of connections to save in the pool
+        adapter = HTTPAdapter(
+            pool_connections=10,
+            pool_maxsize=100,  # Support up to 100 concurrent connections
+            max_retries=Retry(
+                total=3,
+                backoff_factor=0.3,
+                status_forcelist=[500, 502, 503, 504]
+            )
+        )
+
+        # Mount adapter for both http and https
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
 
     def _get_headers(self) -> Dict[str, str]:
         if not self.credentials.valid:
@@ -46,7 +70,7 @@ class AgentClient:
         url = f"{self.base_url}/sessions"
         headers = self._get_headers()
         payload = {"displayName": "GoldenTestSession"}
-        response = requests.post(url, headers=headers, json=payload)
+        response = self.session.post(url, headers=headers, json=payload)
         response.raise_for_status()
         return response.json()["name"]
 
@@ -84,7 +108,7 @@ class AgentClient:
         }
 
         logging.info(f"Querying agent {self.agent_id} with: {text}")
-        response = requests.post(url, headers=headers, json=payload)
+        response = self.session.post(url, headers=headers, json=payload)
 
         if not response.ok:
             # Check for 403 authorization errors

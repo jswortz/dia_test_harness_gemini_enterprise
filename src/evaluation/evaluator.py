@@ -2,17 +2,31 @@ import logging
 import re
 import os
 
-# Configure connection pool size for Vertex AI SDK BEFORE importing
-# This sets urllib3's default maxsize for ALL PoolManagers
-os.environ.setdefault('URLLIB3_DEFAULT_POOL_SIZE', '200')
+# CRITICAL: Monkey-patch urllib3 connection pool BEFORE any imports
+# This ensures Vertex AI SDK uses larger pools for high concurrency (40+ workers)
+import urllib3
+from urllib3 import HTTPConnectionPool
 
+# Save original init
+_original_connectionpool_init = HTTPConnectionPool.__init__
+
+def _patched_connectionpool_init(self, host, port=None, strict=False, timeout=None, maxsize=10,
+                                  block=False, headers=None, retries=None, _proxy=None, _proxy_headers=None,
+                                  _proxy_config=None, **connection_pool_kw):
+    # Force maxsize to at least 200 for all connection pools
+    maxsize = max(200, maxsize) if maxsize else 200
+    # Don't pass 'strict' parameter - it's deprecated in Python 3.x
+    _original_connectionpool_init(self, host, port=port, timeout=timeout, maxsize=maxsize,
+                                   block=block, headers=headers, retries=retries, _proxy=_proxy,
+                                   _proxy_headers=_proxy_headers, _proxy_config=_proxy_config,
+                                   **connection_pool_kw)
+
+# Apply monkey patch globally
+HTTPConnectionPool.__init__ = _patched_connectionpool_init
+
+# Now import Vertex AI SDK - it will use our patched connection pools
 import vertexai
 from vertexai.generative_models import GenerativeModel
-import urllib3
-
-# Set urllib3 default pool size to handle high concurrency
-# This affects all HTTPConnectionPool instances created after this point
-urllib3.poolmanager.PoolManager.DEFAULT_POOLSIZE = 200
 
 class SQLComparator:
     def compare(self, generated: str, expected: str) -> bool:

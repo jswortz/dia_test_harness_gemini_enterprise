@@ -187,6 +187,11 @@ class SingleAgentEvaluator:
         Returns:
             Dict with test result tagged with repeat_num
         """
+        # Add small delay before query to avoid overwhelming agent (rate limiting)
+        # Random jitter prevents thundering herd when many workers start simultaneously
+        query_delay = random.uniform(0.1, 0.5)  # 100-500ms jitter
+        time.sleep(query_delay)
+
         last_exception = None
 
         for attempt in range(max_retries):
@@ -203,14 +208,21 @@ class SingleAgentEvaluator:
             except Exception as e:
                 last_exception = e
 
-                # Check if this is a retryable error
+                # Enhanced error categorization
                 error_str = str(e).lower()
-                is_retryable = any(keyword in error_str for keyword in [
-                    'timeout', 'connection', 'unavailable', 'deadline',
-                    'rate limit', 'quota', '429', '503', '504', '500'
-                ])
+                is_agent_error = 'failed_precondition' in error_str or 'reasoning engine' in error_str
+                is_rate_limit = any(keyword in error_str for keyword in ['rate limit', 'quota', '429', 'resource exhausted'])
+                is_timeout = any(keyword in error_str for keyword in ['timeout', 'deadline', 'timed out'])
+                is_connection = any(keyword in error_str for keyword in ['connection', 'unavailable', '503', '504', '500'])
+
+                # Only retry specific error types (not agent execution errors)
+                is_retryable = is_rate_limit or is_timeout or is_connection
 
                 if not is_retryable or attempt == max_retries - 1:
+                    # Log specific error category for debugging
+                    if is_agent_error:
+                        print(f"  ❌ Agent execution error (non-retryable): {type(e).__name__}")
+                        logging.error(f"Agent execution error for question '{test_case.get('nl_question', 'unknown')}': {e}")
                     # Not retryable or final attempt - raise the error
                     raise
 
@@ -230,7 +242,9 @@ class SingleAgentEvaluator:
     def evaluate_with_repeats(
         self,
         golden_set_path: str,
-        num_repeats: int = 3
+        num_repeats: int = 3,
+        max_retries: int = 2,
+        initial_backoff: float = 2.0
     ) -> Tuple[List[Dict], Dict[str, Any], List[Dict]]:
         """
         Run evaluation multiple times IN PARALLEL and aggregate results.
@@ -238,6 +252,8 @@ class SingleAgentEvaluator:
         Args:
             golden_set_path: Path to golden set file
             num_repeats: Number of times to repeat each test (default: 3)
+            max_retries: Maximum retry attempts per test (default: 2, reduced from 3)
+            initial_backoff: Initial backoff time in seconds (default: 2.0, increased from 1.0)
 
         Returns:
             Tuple of:
@@ -270,9 +286,9 @@ class SingleAgentEvaluator:
 
         print("Running tests in parallel...")
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all tasks
+            # Submit all tasks with updated retry parameters
             future_to_work = {
-                executor.submit(self._run_single_test, tc, rn, idx): (tc, rn, idx)
+                executor.submit(self._run_single_test, tc, rn, idx, max_retries, initial_backoff): (tc, rn, idx)
                 for tc, rn, idx in work_items
             }
 

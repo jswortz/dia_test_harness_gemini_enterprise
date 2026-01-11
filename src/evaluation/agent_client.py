@@ -164,10 +164,24 @@ class AgentClient:
                     engine_id=self.engine_id
                 )
 
-            # Check for retryable errors (429, 400, 500-504)
-            if response.status_code in [400, 429, 500, 502, 503, 504]:
+            # Check for retryable errors (429, 500-504)
+            # Note: 400 errors are handled separately below
+            if response.status_code in [429, 500, 502, 503, 504]:
                 logging.warning(f"Retryable error {response.status_code}: {response.text[:200]}")
                 raise RetryableAPIError(f"API returned retryable status {response.status_code}")
+
+            # Special handling for 400 errors - only retry if NOT FAILED_PRECONDITION
+            if response.status_code == 400:
+                response_text = response.text
+                if "FAILED_PRECONDITION" in response_text:
+                    # Non-retryable: Agent execution failed (reasoning engine error)
+                    logging.error(f"Agent execution failed (FAILED_PRECONDITION) - not retrying")
+                    logging.error(f"Response: {response_text[:500]}")
+                    response.raise_for_status()  # Fail immediately without retry
+                else:
+                    # Other 400 errors might be retryable (e.g., validation issues)
+                    logging.warning(f"Retryable 400 error: {response_text[:200]}")
+                    raise RetryableAPIError(f"API returned retryable status {response.status_code}")
 
             # Non-retryable error
             logging.error(f"Request failed with status {response.status_code}")

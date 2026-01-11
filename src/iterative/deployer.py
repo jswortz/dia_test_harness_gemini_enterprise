@@ -568,6 +568,59 @@ class SingleAgentDeployer:
             print(f"  Error verifying agent: {e}")
             return False
 
+    def health_check(self) -> bool:
+        """
+        Perform a health check on the deployed agent by sending a simple test query.
+
+        Returns:
+            bool: True if agent responds successfully, False otherwise
+        """
+        if not self.agent_name or not self.agent_id:
+            print("⚠️  No agent deployed")
+            return False
+
+        print("\n🏥 Running agent health check...")
+
+        try:
+            # Import here to avoid circular dependencies
+            import sys
+            import os
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+            from evaluation.agent_client import AgentClient
+
+            # Create a test client
+            client = AgentClient(
+                self.project_id,
+                self.location,
+                self.engine_id,
+                self.agent_id,
+                max_connections=10
+            )
+
+            # Send simple test query
+            test_query = "Show me a count of records"
+            print(f"  Sending test query: '{test_query}'")
+
+            response = client.query_agent(test_query)
+
+            if response:
+                print("✓ Agent health check passed - agent is responsive")
+                return True
+            else:
+                print("✗ Agent health check failed - no response")
+                return False
+
+        except Exception as e:
+            error_msg = str(e)
+            # Check if this is a FAILED_PRECONDITION error
+            if "FAILED_PRECONDITION" in error_msg:
+                print(f"✗ Agent health check failed: Agent execution error (FAILED_PRECONDITION)")
+                print(f"   This indicates the agent's reasoning engine is not functioning properly")
+                print(f"   Try redeploying the agent or checking Cloud Console logs")
+            else:
+                print(f"✗ Agent health check failed: {e}")
+            return False
+
     def _verify_config_update(self, expected_config: Dict[str, Any]) -> bool:
         """
         Verify that the agent's configuration matches the expected configuration.

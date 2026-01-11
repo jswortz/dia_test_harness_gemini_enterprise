@@ -6,6 +6,14 @@ from urllib3.util.retry import Retry
 import google.auth
 from google.auth.transport.requests import Request
 from typing import Dict, Any, Optional
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log
+)
+import time
 
 
 class AgentAuthorizationError(Exception):
@@ -16,6 +24,11 @@ class AgentAuthorizationError(Exception):
         self.location = location
         self.engine_id = engine_id
         super().__init__(f"Agent {agent_id} requires OAuth authorization")
+
+
+class RetryableAPIError(Exception):
+    """Raised when API returns a retryable error (429, 500-504)."""
+    pass
 
 
 class AgentClient:
@@ -91,15 +104,27 @@ class AgentClient:
         response.raise_for_status()
         return response.json()["name"]
 
+    @retry(
+        retry=retry_if_exception_type(RetryableAPIError),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=4, max=60),
+        before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
+        reraise=True
+    )
     def query_agent(self, text: str, session_id: Optional[str] = None) -> list:
         """
-        Queries the agent using streamAssist endpoint.
+        Queries the agent using streamAssist endpoint with automatic retry on transient failures.
 
         CRITICAL: Uses agentsSpec to route to the Data Insights Agent.
         Without agentsSpec, queries would go to the default assistant, not the DIA.
 
         Returns:
             List of streaming message chunks as shown in API response structure.
+
+        Raises:
+            RetryableAPIError: For 400, 429, 500-504 errors (will be automatically retried)
+            AgentAuthorizationError: For 403 authorization errors (not retried)
+            requests.HTTPError: For other HTTP errors (not retried)
         """
         if not session_id:
             # Use '-' for auto-created session
@@ -128,7 +153,7 @@ class AgentClient:
         response = self.session.post(url, headers=headers, json=payload)
 
         if not response.ok:
-            # Check for 403 authorization errors
+            # Check for 403 authorization errors (DO NOT RETRY)
             if response.status_code == 403:
                 logging.error(f"Agent requires authorization (403 Forbidden)")
                 logging.error(f"Response body: {response.text}")
@@ -139,6 +164,12 @@ class AgentClient:
                     engine_id=self.engine_id
                 )
 
+            # Check for retryable errors (429, 400, 500-504)
+            if response.status_code in [400, 429, 500, 502, 503, 504]:
+                logging.warning(f"Retryable error {response.status_code}: {response.text[:200]}")
+                raise RetryableAPIError(f"API returned retryable status {response.status_code}")
+
+            # Non-retryable error
             logging.error(f"Request failed with status {response.status_code}")
             logging.error(f"Response body: {response.text}")
             logging.error(f"Payload sent: {json.dumps(payload)}")

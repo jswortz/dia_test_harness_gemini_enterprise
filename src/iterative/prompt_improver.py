@@ -268,10 +268,12 @@ Analyze the TRAINING failure patterns and generate an IMPROVED version of the NL
 
 5. **VALIDATION CHECKLIST (verify before returning):**
    - [ ] Prompt is LONGER or similar length (unless removing redundancy)
+   - [ ] Prompt size doesn't shrink by more than 20% in a single iteration
    - [ ] Contains instruction keywords: "MUST", "ALWAYS", "NEVER", "rule", "formula"
    - [ ] SQL keywords (SELECT, FROM, WHERE) are in examples, not as main content
    - [ ] All original sections are preserved or enhanced
    - [ ] New sections ADD to existing guidance, don't replace it
+   - [ ] Context/supporting column instructions are preserved unless failures prove them harmful
 
 6. **IMPROVEMENT PATTERN:**
    When you see a failure:
@@ -285,11 +287,17 @@ Analyze the TRAINING failure patterns and generate an IMPROVED version of the NL
 2. Add specific, actionable instructions to fix the identified issues
 3. Add comprehensive rules - thorough instructions are better than terse ones
 4. Maintain BigQuery SQL syntax compatibility
-5. Focus on root causes, not symptoms (e.g., if column over-selection is the issue, add instruction to select only requested fields)
+5. Focus on root causes, not symptoms. Preserve helpful patterns unless they're directly causing failures.
 6. IMPORTANT: Preserve patterns from successful test cases - don't break what's already working
 
+**CRITICAL: Preserve What Works**
+- If the current prompt instructs to include context/supporting columns (like guest_counts, days_in_period, period labels), preserve this unless there's clear evidence it's causing failures
+- Adding analytical context columns is often beneficial for query accuracy
+- Only remove or restrict column selection instructions if the failures explicitly show they're causing problems
+- Do not interpret helpful context columns as "over-selection"
+
 **Common Failure Patterns to Address:**
-- Column over-selection (SELECT * instead of specific columns)
+- Selecting unnecessary columns that significantly slow queries (e.g., SELECT * on wide tables)
 - Incorrect JOINs or missing JOINs
 - Date filtering issues (wrong format, timezone handling)
 - Aggregation errors (GROUP BY, COUNT, SUM, AVG)

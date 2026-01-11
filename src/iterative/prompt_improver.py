@@ -98,7 +98,22 @@ class PromptImprover:
                 if in_code_block:
                     prompt_lines.append(line)
             if prompt_lines:
-                suggested_prompt = "\n".join(prompt_lines).strip()
+                extracted = "\n".join(prompt_lines).strip()
+
+                # CRITICAL VALIDATION: Ensure extracted content is instructions, not SQL code
+                # If extraction starts with SQL keywords, it's likely wrong - use full response
+                if not extracted.upper().startswith(('SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE', 'FROM', 'JOIN', 'WHERE', 'INNER', 'LEFT', 'RIGHT')):
+                    suggested_prompt = extracted
+                else:
+                    # SQL code detected in code block - don't extract, use full response
+                    print(f"⚠️  Warning: Code block contains SQL, not instructions. Using full response.")
+
+        # Final validation: Ensure we didn't extract SQL code
+        if suggested_prompt.strip().upper().startswith(('SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE', 'FROM', 'JOIN', 'INNER', 'LEFT', 'RIGHT')):
+            print(f"🔴 ERROR: Extracted prompt appears to be SQL code, not instructions!")
+            print(f"   Preview: {suggested_prompt[:200]}")
+            print(f"   Returning current prompt instead to prevent corruption.")
+            return current_prompt  # Return original to prevent corruption
 
         return suggested_prompt
 

@@ -329,6 +329,15 @@ class IterativeOptimizer:
                     # IMPORTANT: failures and results are from TRAINING SET ONLY
                     improved_prompt, change_description = self._improve_prompt(failures, results)
 
+                    # VALIDATION: Check that improved_prompt is actually a prompt, not SQL
+                    if improved_prompt.strip().upper().startswith(('SELECT', 'WITH', 'INSERT', 'UPDATE')):
+                        logging.error(f"🔴 CORRUPTION DETECTED: improved_prompt is SQL code, not a prompt!")
+                        logging.error(f"Prompt preview: {improved_prompt[:200]}")
+                        print(f"\n🔴 ERROR: Prompt improvement produced SQL code instead of a prompt!")
+                        print(f"   This indicates a bug in the prompt improvement logic.")
+                        print(f"   Skipping this iteration to prevent corruption.")
+                        break
+
                     # Store suggested config (BEFORE applying changes)
                     suggested_config = self.current_config.copy()
                     suggested_config["nl2sql_prompt"] = improved_prompt

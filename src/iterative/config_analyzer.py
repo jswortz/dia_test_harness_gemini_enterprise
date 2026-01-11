@@ -208,6 +208,12 @@ Your task is to analyze test failures and recommend which configuration fields s
 1. **nl2sql_prompt**: The system prompt that guides natural language to SQL conversion. This is the primary instruction for SQL generation.
    - Modify when: SQL structure is incorrect, agent misunderstands query intent, or needs better guidance
    - Priority: HIGH - Most impactful field
+   - **CRITICAL CONSTRAINTS FOR nl2sql_prompt:**
+     * FIELD PURPOSE: Contains NATURAL LANGUAGE INSTRUCTIONS for how to generate SQL (RULES, FORMULAS, GUIDELINES)
+     * MUST NOT be SQL code snippets or templates - it should be comprehensive natural language instructions
+     * FORBIDDEN: Replacing entire prompt with SQL code, reducing size >30%, converting instructions to code
+     * ALLOWED: Adding new instruction sections, clarifying rules, fixing formulas, adding examples to ILLUSTRATE rules
+     * VALIDATION: Prompt should be LONGER or similar length, contain instruction keywords (MUST, ALWAYS, NEVER), SQL keywords should be in examples only
 
 2. **tool_description**: Description of when and how to use this agent (agent-level guidance for routing).
    - Modify when: Agent needs clearer scope definition or usage guidance
@@ -236,7 +242,7 @@ Your task is to analyze test failures and recommend which configuration fields s
 {successes_summary}
 ## Your Task
 
-Analyze these TRAINING SET failures and provide recommendations for EACH of the 4 configuration fields listed above.
+Analyze these TRAINING SET failures and provide recommendations for EACH of the 5 configuration fields listed above.
 
 **CRITICAL DATA LEAKAGE PREVENTION:**
 - You are analyzing ONLY training set data (failures and successes)
@@ -249,6 +255,40 @@ For each field, determine:
 2. **rationale** (str): Clear explanation of why this field should/shouldn't be modified based on the failures
 3. **priority** (int 1-5): How important this modification is (5=critical, 1=nice-to-have)
 4. **suggested_value** (str): If should_modify=True, provide a concrete suggestion for the new value
+
+**CRITICAL: When generating suggested_value for nl2sql_prompt:**
+- ❌ DO NOT generate SQL code snippets (e.g., "SELECT...", "FROM...", "JOIN...")
+- ❌ DO NOT replace the entire prompt with terse SQL examples
+- ❌ DO NOT reduce prompt size by more than 30%
+- ✅ DO generate comprehensive natural language INSTRUCTIONS with rules, formulas, and guidelines
+- ✅ DO expand the existing prompt with new instruction sections addressing failures
+- ✅ DO keep instruction keywords like "MUST", "ALWAYS", "NEVER", "rule", "formula"
+- ✅ DO ensure suggested_value is 2000+ characters of detailed instructions
+- ✅ DO use SQL only as EXAMPLES to ILLUSTRATE the rules, not as the main content
+
+**Example of CORRECT nl2sql_prompt suggested_value format:**
+```
+You are a data analyst expert. Follow these rules:
+
+*** CRITICAL RULES ***
+1. AGGREGATION: When user asks for "sales for October", return ONE total row.
+   - DO NOT use GROUP BY unless "by date" or "daily" explicitly requested
+   - Example correct SQL: SELECT SUM(sales) FROM table WHERE month='Oct'
+   - Example wrong SQL: SELECT date, SUM(sales) FROM table GROUP BY date
+
+2. TABLE JOINS: Always use these join patterns:
+   - For market groups: INNER JOIN rept_terr_grp_mkt ON mkt_nu
+   - ...
+
+[Continue with comprehensive rules and formulas]
+```
+
+**Example of WRONG nl2sql_prompt suggested_value (NEVER do this):**
+```
+INNER JOIN rept_terr_grp_mkt rtg ON main.mkt_nu = rtg.mkt_nu
+WHERE rtg.rept_terr_grp_na = 'Top 10'
+```
+This is SQL code, NOT instructions!
 
 ## Output Format
 

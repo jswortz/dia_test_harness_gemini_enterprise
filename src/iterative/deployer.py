@@ -441,6 +441,17 @@ class SingleAgentDeployer:
                     }
                 }
 
+                # DEBUG: Log what we're sending to the API
+                logging.debug("="*80)
+                logging.debug("PATCH REQUEST PAYLOAD:")
+                logging.debug(f"nl_query_config keys: {list(nl_query_config.keys())}")
+                logging.debug(f"nl2sqlPrompt length: {len(nl_query_config.get('nl2sqlPrompt', ''))}")
+                logging.debug(f"nl2sqlPrompt preview: {nl_query_config.get('nl2sqlPrompt', '')[:200]}...")
+                if 'nl2sqlExamples' in nl_query_config:
+                    examples = nl_query_config['nl2sqlExamples']
+                    logging.debug(f"nl2sqlExamples count: {len(examples) if isinstance(examples, list) else 'NOT A LIST'}")
+                logging.debug("="*80)
+
                 # Only update nlQueryConfig fields during optimization
                 # Table access control (allowed_tables/blocked_tables) should remain static
                 update_mask_fields = ["managedAgentDefinition.dataScienceAgentConfig.nlQueryConfig"]
@@ -762,6 +773,29 @@ class SingleAgentDeployer:
 
             agent_data = resp.json()
 
+            # DEBUG: Log the raw API response structure
+            logging.debug("="*80)
+            logging.debug("RAW API RESPONSE FROM GET AGENT:")
+            logging.debug(f"Response keys: {list(agent_data.keys())}")
+            if "managedAgentDefinition" in agent_data:
+                managed_def_keys = list(agent_data["managedAgentDefinition"].keys())
+                logging.debug(f"managedAgentDefinition keys: {managed_def_keys}")
+                if "dataScienceAgentConfig" in agent_data["managedAgentDefinition"]:
+                    ds_config = agent_data["managedAgentDefinition"]["dataScienceAgentConfig"]
+                    logging.debug(f"dataScienceAgentConfig keys: {list(ds_config.keys())}")
+                    if "nlQueryConfig" in ds_config:
+                        nl_query = ds_config["nlQueryConfig"]
+                        logging.debug(f"nlQueryConfig keys: {list(nl_query.keys())}")
+                        if "nl2sqlPrompt" in nl_query:
+                            prompt_preview = nl_query["nl2sqlPrompt"][:200]
+                            logging.debug(f"nl2sqlPrompt preview: {prompt_preview}...")
+                        if "nl2sqlExamples" in nl_query:
+                            examples = nl_query["nl2sqlExamples"]
+                            logging.debug(f"nl2sqlExamples count: {len(examples) if isinstance(examples, list) else 'NOT A LIST'}")
+                            if isinstance(examples, list) and len(examples) > 0:
+                                logging.debug(f"First example keys: {list(examples[0].keys()) if isinstance(examples[0], dict) else 'NOT A DICT'}")
+            logging.debug("="*80)
+
             # Extract relevant config fields from the API response
             # The API returns fields in camelCase format
             managed_def = agent_data.get("managedAgentDefinition", {})
@@ -787,6 +821,24 @@ class SingleAgentDeployer:
                 # Note: allowedTables and blockedTables are not supported by API
                 "params": {}  # Legacy field for backward compatibility
             }
+
+            # VALIDATION: Check for config corruption
+            prompt = config.get("nl2sql_prompt", "")
+
+            # Check if prompt looks like SQL code instead of instructions
+            prompt_upper = prompt.strip().upper()
+            if prompt_upper.startswith(('SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP')):
+                logging.error(f"⚠️  CORRUPTION DETECTED: nl2sql_prompt appears to be SQL code, not a prompt!")
+                logging.error(f"Prompt preview: {prompt[:200]}")
+                print(f"⚠️  WARNING: Retrieved prompt appears to be SQL code!")
+                print(f"   This may indicate API response corruption or field mapping issue.")
+                print(f"   Prompt preview: {prompt[:100]}...")
+
+            # Check if prompt is suspiciously short (< 500 chars typically indicates corruption)
+            if len(prompt) < 500 and len(prompt) > 0:
+                logging.warning(f"⚠️  Retrieved prompt is unusually short: {len(prompt)} chars")
+                logging.warning(f"Prompt: {prompt[:200]}")
+                print(f"⚠️  WARNING: Retrieved prompt is unusually short ({len(prompt)} chars)")
 
             print(f"✓ Fetched config from deployed agent")
             logging.info(f"Retrieved agent config: name={config['name']}, "

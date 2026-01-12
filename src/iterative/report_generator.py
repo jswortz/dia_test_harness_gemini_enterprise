@@ -96,6 +96,16 @@ class OptimizationReportGenerator:
 **Total Iterations:** {iteration_count}
 **Framework:** Data Insights Agent (DIA) Test Harness
 
+## Report Features
+
+This comprehensive optimization report includes:
+- ✅ **Metrics & Charts**: Accuracy trends, metric breakdowns, and performance analysis
+- ✅ **Configuration Links**: Direct links to all deployed agent configurations
+- ✅ **Execution Logs**: References to log files and Cloud Console links
+- ✅ **Expandable Question-Level Performance**: Click each failure to see detailed SQL comparisons and AI judgement analysis
+- ✅ **AI Model Attribution**: All AI models used for judgements and improvements are documented
+- ✅ **Iteration Feedback**: Detailed reasoning for why each configuration change was made
+
 ---
 """
 
@@ -276,11 +286,13 @@ class OptimizationReportGenerator:
             if not path.exists():
                 continue
 
-            # Use relative path from results directory
-            # If path contains 'results/', extract everything after it
+            # Use relative path from the report location (within the same run directory)
+            # Extract just the filename and prepend 'charts/' directory
             path_str = str(path)
-            if 'results/' in path_str:
-                rel_path = path_str.split('results/')[-1]
+            if 'charts/' in path_str:
+                # Extract just the filename from the charts directory
+                filename = path.name
+                rel_path = f"charts/{filename}"
             else:
                 rel_path = path.name
 
@@ -332,6 +344,9 @@ class OptimizationReportGenerator:
                 section += f"\n**Test Metrics:**\n"
                 section += f"- Accuracy: {test_acc:.2%} ({test_correct}/{test_total})\n"
 
+            # Add color-coded results table before failures
+            section += self._format_results_table(iteration, evals.get("train", {}))
+
             # Failures (truncated)
             section += self._format_failures(evals.get("train", {}))
 
@@ -360,31 +375,149 @@ class OptimizationReportGenerator:
             if "blocked_tables" in config and config["blocked_tables"]:
                 section += f"- **blocked_tables**: {len(config['blocked_tables'])} tables blocked\n"
 
-            # Prompt changes description
+            # Prompt changes description with AI model information
             if iteration.get("prompt_changes"):
                 section += f"\n**Changes Made:** {iteration['prompt_changes']}\n"
+
+            # Add AI model information if available
+            section += f"\n**AI Models Used:**\n"
+            section += f"- **SQL Judgement**: Gemini 2.5 Pro (for semantic SQL equivalence evaluation)\n"
+            section += f"- **Prompt Improvement**: Gemini 2.0 Flash Exp (for analyzing failures and suggesting improvements)\n"
+            section += f"- **Config Analysis**: Gemini 2.0 Flash Exp (for recommending configuration changes)\n"
+
+            # Show overall iteration feedback (AI reasoning for changes)
+            if iteration.get("prompt_changes") and idx > 0:
+                section += f"\n<details>\n"
+                section += f"<summary><b>📋 View AI Improvement Reasoning</b></summary>\n\n"
+                section += f"**Why these changes were made:**\n\n"
+                section += f"{iteration['prompt_changes']}\n\n"
+
+                # Show comparison with previous iteration
+                prev_iteration = iterations[idx-1] if idx > 0 else None
+                if prev_iteration:
+                    prev_acc = self._normalize_iteration(prev_iteration).get("evaluation", {}).get("train", {}).get("accuracy", 0.0)
+                    curr_acc = evals.get("train", {}).get("accuracy", 0.0)
+                    improvement = curr_acc - prev_acc
+                    section += f"**Performance Change:** {improvement:+.2%} (from {prev_acc:.2%} to {curr_acc:.2%})\n\n"
+
+                section += f"</details>\n\n"
 
             section += "\n---\n\n"
 
         return section
 
-    def _format_failures(self, eval_data: Dict, max_failures: int = 5) -> str:
-        """Format failure list with truncation."""
+    def _format_results_table(self, iteration: Dict, eval_data: Dict) -> str:
+        """Format color-coded results table showing expected vs generated SQL.
+
+        Args:
+            iteration: Iteration data containing all test results
+            eval_data: Evaluation data with failures and successes
+
+        Returns:
+            Markdown table with color-coded results
+        """
+        # Get all results from the iteration (including successes and failures)
+        all_results = iteration.get("results", [])
+        if not all_results:
+            # Fallback: try to reconstruct from failures
+            all_results = eval_data.get("failures", [])
+
+        if not all_results:
+            return "\n**Results Table:** No test results available\n\n"
+
+        section = "\n**Question-Level Results:**\n\n"
+        section += "| # | Question | Status | Match Type |\n"
+        section += "|---|----------|--------|------------|\n"
+
+        for i, result in enumerate(all_results, 1):
+            question = result.get("question", "Unknown")[:60]  # Truncate long questions
+            is_match = result.get("is_match", False)
+            explanation = result.get("explanation", "")
+            issue = result.get("issue", result.get("error", "Unknown"))
+
+            # Determine status and color based on is_match and explanation
+            if is_match:
+                status = "🟢 **PASS**"
+                match_type = "Exact Match"
+            elif "EQUIVALENT" in explanation:
+                status = "🟡 **PASS**"
+                match_type = "Semantic Match"
+            elif "DIFFERENT" in explanation or not is_match:
+                status = "🔴 **FAIL**"
+                # Extract brief reason from issue or explanation
+                if issue and issue != "Unknown" and issue != "Unknown error":
+                    match_type = issue[:30] + "..." if len(issue) > 30 else issue
+                else:
+                    match_type = "Different SQL"
+            else:
+                status = "⚪ **UNKNOWN**"
+                match_type = issue[:30] if issue else "Unknown"
+
+            section += f"| {i} | {question} | {status} | {match_type} |\n"
+
+        # Add summary row
+        total = len(all_results)
+        exact_matches = sum(1 for r in all_results if r.get("is_match", False))
+        semantic_matches = sum(1 for r in all_results if not r.get("is_match", False) and "EQUIVALENT" in r.get("explanation", ""))
+        failures = total - exact_matches - semantic_matches
+
+        section += f"\n**Summary:** {total} tests | "
+        section += f"🟢 {exact_matches} exact | "
+        section += f"🟡 {semantic_matches} semantic | "
+        section += f"🔴 {failures} failed\n\n"
+
+        return section
+
+    def _format_failures(self, eval_data: Dict, max_failures: int = 5, expandable: bool = True) -> str:
+        """Format failure list with optional expandable details.
+
+        Args:
+            eval_data: Evaluation data containing failures
+            max_failures: Number of failures to show in summary (if not expandable)
+            expandable: If True, use HTML details/summary for expandable sections
+        """
         failures = eval_data.get("failures", [])
         if not failures:
             return "\n**Failures:** None\n"
 
         section = f"\n**Failures:** {len(failures)} total\n\n"
 
-        for i, failure in enumerate(failures[:max_failures]):
-            question = failure.get("question", "Unknown")
-            error = failure.get("error", "Unknown error")
+        if expandable:
+            # Use HTML details/summary tags for expandable question-level performance
+            for i, failure in enumerate(failures):
+                question = failure.get("question", "Unknown")
+                error = failure.get("error", "Unknown error")
+                explanation = failure.get("explanation", "")
+                expected_sql = failure.get("expected_sql", "")
+                generated_sql = failure.get("generated_sql", "")
 
-            section += f"{i+1}. **Q:** {question}\n"
-            section += f"   **Error:** {error[:150]}\n"
+                # Create expandable section
+                section += f"<details>\n"
+                section += f"<summary><b>{i+1}. {question}</b> - <i>{error[:80]}...</i></summary>\n\n"
+                section += f"**Issue:** {error}\n\n"
 
-        if len(failures) > max_failures:
-            section += f"\n... and {len(failures) - max_failures} more failures (see appendix)\n"
+                if expected_sql:
+                    section += f"**Expected SQL:**\n```sql\n{expected_sql}\n```\n\n"
+
+                if generated_sql:
+                    section += f"**Generated SQL:**\n```sql\n{generated_sql}\n```\n\n"
+
+                if explanation:
+                    # Show full explanation without truncation
+                    section += f"**AI Judgement Analysis:**\n{explanation}\n\n"
+
+                section += f"</details>\n\n"
+        else:
+            # Traditional truncated format
+            for i, failure in enumerate(failures[:max_failures]):
+                question = failure.get("question", "Unknown")
+                error = failure.get("error", "Unknown error")
+
+                section += f"{i+1}. **Q:** {question}\n"
+                section += f"   **Error:** {error[:150]}\n"
+
+            if len(failures) > max_failures:
+                section += f"\n... and {len(failures) - max_failures} more failures (see appendix)\n"
 
         return section
 
@@ -537,8 +670,14 @@ class OptimizationReportGenerator:
             section += f"- [`eval_train_{timestamp}.jsonl.repeat1`](eval_train_{timestamp}.jsonl.repeat1) - Training evaluation (repeat 1)\n"
             section += f"- [`eval_train_{timestamp}.jsonl.repeat2`](eval_train_{timestamp}.jsonl.repeat2) - Training evaluation (repeat 2)\n\n"
         else:
-            section += f"- `results/trajectory_history_{agent_id}.json` - Complete optimization trajectory\n"
-            section += "- `results/eval_train_*.jsonl.repeat*` - Evaluation results\n\n"
+            section += f"- `trajectory_history_{agent_id}.json` - Complete optimization trajectory\n"
+            section += "- `eval_train_*.jsonl.repeat*` - Evaluation results\n\n"
+
+        # Add log file links
+        section += "**Execution Logs:**\n"
+        section += "- Check results directory for phase1/phase2 test output logs\n"
+        section += "- Agent deployment logs available via Google Cloud Console\n"
+        section += "- [View agent in Cloud Console](https://console.cloud.google.com/gen-app-builder/engines)\n\n"
 
         # Config snapshots
         iterations = trajectory.get("iterations", [])

@@ -55,9 +55,16 @@ DIA_LOCATION=global
 DIA_ENGINE_ID=your-engine-id
 BQ_DATASET_ID=your-dataset-id
 DIA_AGENT_ID=  # ⚠️ ADD THIS AFTER DEPLOYING (see Step 1 below)
+JUDGEMENT_MODEL=gemini-3-flash-preview  # Optional: LLM for SQL semantic comparison (default: gemini-2.5-pro)
 ```
 
-**Note**: The `DIA_AGENT_ID` will be populated after you deploy your agent in Step 1.
+**Configuration Options:**
+- `DIA_AGENT_ID`: Populated after deployment (see Step 1)
+- `JUDGEMENT_MODEL`: Gemini model for semantic SQL evaluation
+  - `gemini-3-flash-preview` (recommended): Fast, cost-effective, good accuracy
+  - `gemini-2.5-pro`: Higher quality but slower and more expensive
+  - `gemini-1.5-flash`: Faster alternative
+  - Default: `gemini-2.5-pro` if not specified
 
 ## Quick Start
 

@@ -115,7 +115,134 @@ class PromptImprover:
             print(f"   Returning current prompt instead to prevent corruption.")
             return current_prompt  # Return original to prevent corruption
 
+        # CRITICAL SAFETY CHECK: Validate prompt meets minimum requirements
+        validation_result = self._validate_prompt_quality(suggested_prompt, current_prompt)
+        if not validation_result["valid"]:
+            print(f"🔴 ERROR: Prompt validation failed!")
+            for reason in validation_result["reasons"]:
+                print(f"   - {reason}")
+            print(f"   Returning current prompt instead to prevent corruption.")
+            return current_prompt
+
         return suggested_prompt
+
+    def _validate_prompt_quality(
+        self,
+        suggested_prompt: str,
+        current_prompt: str
+    ) -> Dict[str, Any]:
+        """
+        Validate that suggested prompt meets quality requirements.
+
+        Critical safety checks to prevent prompt corruption.
+
+        Args:
+            suggested_prompt: The suggested new prompt
+            current_prompt: The current prompt (for comparison)
+
+        Returns:
+            Dict with:
+                - valid (bool): Whether prompt passes validation
+                - reasons (List[str]): List of validation failure reasons
+        """
+        reasons = []
+
+        # VALIDATION 1: Minimum length (prevent replacement with snippets)
+        MIN_PROMPT_LENGTH = 1000  # chars
+        if len(suggested_prompt) < MIN_PROMPT_LENGTH:
+            reasons.append(
+                f"Prompt too short: {len(suggested_prompt)} chars "
+                f"(minimum: {MIN_PROMPT_LENGTH})"
+            )
+
+        # VALIDATION 2: Prevent drastic size reduction (>40% shrinkage)
+        # CONSERVATIVE APPROACH: Prefer prompts to GROW, not shrink
+        if len(current_prompt) > 0:
+            size_ratio = len(suggested_prompt) / len(current_prompt)
+            shrinkage_pct = (1 - size_ratio) * 100
+
+            if size_ratio < 0.6:  # More than 40% reduction - REJECT
+                reasons.append(
+                    f"Prompt shrunk by {shrinkage_pct:.0f}% "
+                    f"({len(current_prompt)} -> {len(suggested_prompt)} chars). "
+                    f"Maximum allowed reduction is 40%. "
+                    f"This often indicates over-correction that breaks working queries."
+                )
+            elif size_ratio < 0.85:  # 15-40% reduction - WARNING
+                # Don't reject, but log warning
+                import logging
+                logging.warning(
+                    f"⚠️  Prompt shrinkage detected: {shrinkage_pct:.0f}% reduction. "
+                    f"Conservative approach prefers additions over deletions."
+                )
+
+        # VALIDATION 3: Must contain instruction keywords (not just code)
+        instruction_keywords = ['MUST', 'ALWAYS', 'NEVER', 'should', 'rule', 'formula', 'when', 'if']
+        keyword_count = sum(1 for kw in instruction_keywords if kw.lower() in suggested_prompt.lower())
+
+        if keyword_count < 3:
+            reasons.append(
+                f"Missing instruction keywords. Found {keyword_count}, need at least 3 from: "
+                f"{', '.join(instruction_keywords)}"
+            )
+
+        # VALIDATION 4: SQL keywords should not dominate (indicates code, not instructions)
+        sql_keywords = ['SELECT', 'FROM', 'WHERE', 'JOIN', 'GROUP BY', 'ORDER BY', 'HAVING']
+        sql_count = sum(suggested_prompt.upper().count(kw) for kw in sql_keywords)
+
+        # Allow SQL in examples, but not as majority of content
+        # Heuristic: SQL keywords should not appear more than once per 100 chars
+        sql_density = sql_count / (len(suggested_prompt) / 100)
+        if sql_density > 5:  # More than 5 SQL keywords per 100 chars
+            reasons.append(
+                f"Too many SQL keywords ({sql_count} in {len(suggested_prompt)} chars). "
+                f"This suggests SQL code, not natural language instructions."
+            )
+
+        # VALIDATION 5: Check for required sections/patterns
+        # A proper prompt should have multiple lines and paragraphs
+        line_count = len(suggested_prompt.split('\n'))
+        if line_count < 10:
+            reasons.append(
+                f"Prompt has only {line_count} lines. "
+                f"Comprehensive instructions should have at least 10 lines."
+            )
+
+        # VALIDATION 6: Check for role/behavior preservation
+        # Detect if agent role was changed inappropriately
+        role_change_indicators = [
+            'code generator',
+            'sql generator',
+            'output format: sql only',
+            'no commentary',
+            'do not provide explanations',
+            'generation only',
+            'not a database interface',
+            'output must be only'
+        ]
+
+        found_indicators = [
+            indicator for indicator in role_change_indicators
+            if indicator.lower() in suggested_prompt.lower()
+        ]
+
+        if found_indicators and len(current_prompt) > 0:
+            # Check if these weren't in the original
+            original_had_indicators = any(
+                indicator.lower() in current_prompt.lower()
+                for indicator in found_indicators
+            )
+
+            if not original_had_indicators:
+                reasons.append(
+                    f"Role/behavior change detected. Found new restrictions: {', '.join(found_indicators)}. "
+                    f"This violates PRINCIPLE 5: preserve agent role and conversational capabilities."
+                )
+
+        return {
+            "valid": len(reasons) == 0,
+            "reasons": reasons
+        }
 
     def _build_analysis_prompt(
         self,
@@ -194,6 +321,14 @@ Continue improving while preserving what's working well.
                 # Include first 300 chars of explanation
                 explanation = failure['explanation'][:300]
                 summary += f"\n   LLM Judge: {explanation}"
+
+                # Extract rubric score if available (format: "Total: X/25")
+                import re
+                score_match = re.search(r'Total[:\s]+(\d+)/25', failure['explanation'], re.IGNORECASE)
+                if score_match:
+                    score = int(score_match.group(1))
+                    severity = "CRITICAL" if score < 10 else "MODERATE" if score < 20 else "MINOR"
+                    summary += f"\n   Severity: {severity} (score: {score}/25)"
             failure_summary.append(summary)
 
         failures_text = "\n".join(failure_summary)
@@ -257,6 +392,10 @@ Analyze the TRAINING failure patterns and generate an IMPROVED version of the NL
    ❌ Removing existing instruction sections
    ❌ Converting instructions to executable code
    ❌ Replacing comprehensive rules with terse examples
+   ❌ **REMOVING instructions that help successful test cases**
+   ❌ **CHANGING the agent's core role or personality** (e.g., analyst → code generator)
+   ❌ **CHANGING output format** (e.g., adding "SQL only, no commentary" restrictions)
+   ❌ **REMOVING conversational/explanatory capabilities**
 
 4. **ALLOWED CHANGES:**
    ✅ Adding new instruction sections for newly identified patterns
@@ -265,6 +404,60 @@ Analyze the TRAINING failure patterns and generate an IMPROVED version of the NL
    ✅ Adding SQL examples to ILLUSTRATE rules (not replace them)
    ✅ Reorganizing sections for better clarity
    ✅ Expanding instructions with more specific guidance
+
+**🚨 CRITICAL: CONSERVATIVE APPROACH REQUIRED**
+
+You MUST follow these principles to avoid breaking working queries:
+
+**PRINCIPLE 1: ADD, DON'T REPLACE**
+- Default action: ADD new rules/clarifications to existing prompt
+- NEVER remove entire sections unless they directly contradict correct behavior
+- If a rule seems incomplete, EXPAND it rather than delete it
+- Preserve ALL working instructions even if they seem redundant
+
+**PRINCIPLE 2: PRESERVE SUCCESSFUL PATTERNS**
+- Review the successful test cases carefully
+- Identify which prompt instructions enabled those successes
+- PROTECT those instructions from modification
+- Only modify instructions if they clearly cause failures AND don't help successes
+
+**PRINCIPLE 3: TARGETED FIXES ONLY**
+- Address SPECIFIC failure root causes
+- Don't make broad changes that might affect unrelated queries
+- If fixing one pattern, verify it won't break another
+- Prefer adding clarifying notes over changing existing rules
+
+**PRINCIPLE 4: SIZE PRESERVATION**
+- Aim for prompt to stay SAME SIZE or GROW (additions > deletions)
+- If you must delete something, replace it with better guidance of similar length
+- Shrinking the prompt is a RED FLAG - it often indicates removing helpful content
+
+**PRINCIPLE 5: PRESERVE CORE AGENT ROLE & BEHAVIOR**
+- NEVER change the agent's fundamental role or personality
+- NEVER change output format expectations (conversational vs code-only)
+- NEVER switch paradigms (e.g., "data analyst" → "code generator")
+- NEVER add instructions like "OUTPUT FORMAT: SQL only, no commentary"
+- NEVER add "you are a code generator, not a database interface"
+- Preserve conversational/explanatory capabilities
+- The agent should EXPLAIN results, not just generate code
+- Focus on improving SQL QUALITY, not changing how the agent communicates
+
+**EXAMPLE OF GOOD VS BAD CHANGES:**
+
+❌ BAD: "The current prompt tells agents to include context columns. I'll remove that since some failures have too many columns."
+✅ GOOD: "The current prompt tells agents to include context columns. I'll ADD guidance about WHEN to include them and which ones are essential vs optional."
+
+❌ BAD: "I'll simplify the date handling section since it's too complex."
+✅ GOOD: "I'll ADD specific examples to the date handling section to clarify edge cases."
+
+❌ BAD: "Iteration had 5 failures. I'll rewrite the prompt to fix all 5."
+✅ GOOD: "Iteration had 5 failures and 12 successes. I'll ADD targeted rules for the 5 failures while preserving what makes the 12 successes work."
+
+❌ BAD: "The agent is generating conversational responses. I'll change it to a pure code generator that outputs SQL only."
+✅ GOOD: "The agent's SQL has some issues. I'll ADD rules to improve SQL quality while keeping the conversational explanation capability."
+
+❌ BAD: "I'll add 'OUTPUT FORMAT: SQL in markdown only, no commentary' to make it cleaner."
+✅ GOOD: "I'll ADD specific SQL quality rules (join syntax, aggregation logic) to improve accuracy."
 
 5. **VALIDATION CHECKLIST (verify before returning):**
    - [ ] Prompt is LONGER or similar length (unless removing redundancy)

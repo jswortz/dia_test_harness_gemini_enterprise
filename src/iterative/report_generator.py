@@ -486,7 +486,7 @@ This comprehensive optimization report includes:
             # Use HTML details/summary tags for expandable question-level performance
             for i, failure in enumerate(failures):
                 question = failure.get("question", "Unknown")
-                error = failure.get("error", "Unknown error")
+                error = failure.get("issue", "Unknown error")
                 explanation = failure.get("explanation", "")
                 expected_sql = failure.get("expected_sql", "")
                 generated_sql = failure.get("generated_sql", "")
@@ -511,7 +511,7 @@ This comprehensive optimization report includes:
             # Traditional truncated format
             for i, failure in enumerate(failures[:max_failures]):
                 question = failure.get("question", "Unknown")
-                error = failure.get("error", "Unknown error")
+                error = failure.get("issue", "Unknown error")
 
                 section += f"{i+1}. **Q:** {question}\n"
                 section += f"   **Error:** {error[:150]}\n"

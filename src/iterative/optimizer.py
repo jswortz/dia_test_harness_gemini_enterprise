@@ -87,8 +87,9 @@ def validate_prompt_improvement(
         return False, reason
 
     # Check 4: Minimum prompt length (should be substantial)
-    if len(new_prompt) < 500:
-        reason = f"Prompt too short ({len(new_prompt)} chars) - needs comprehensive instructions"
+    MIN_PROMPT_LENGTH = 1000  # Increased from 500 to prevent corruption
+    if len(new_prompt) < MIN_PROMPT_LENGTH:
+        reason = f"Prompt too short ({len(new_prompt)} chars, minimum {MIN_PROMPT_LENGTH}) - needs comprehensive instructions"
         if verbose:
             logging.warning(f"❌ Validation failed: {reason}")
         return False, reason

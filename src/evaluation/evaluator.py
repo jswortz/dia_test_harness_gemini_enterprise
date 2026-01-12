@@ -103,19 +103,23 @@ class SQLComparator:
         return is_match
 
 class JudgementModel:
-    def __init__(self, project_id: str, location: str, model_name: str = "gemini-2.5-pro"):
+    def __init__(self, project_id: str, location: str, model_name: str = None):
         """
         Initialize JudgementModel.
 
         Args:
             project_id: Google Cloud project ID
             location: Vertex AI location
-            model_name: Model to use for judgement (default: gemini-2.5-pro)
+            model_name: Model to use for judgement (default: from JUDGEMENT_MODEL env var or gemini-2.5-pro)
 
         Note:
             Connection pool is configured globally at module level (200 connections)
             to handle high concurrency from parallel workers.
         """
+        # Use env variable if model_name not provided
+        if model_name is None:
+            model_name = os.getenv("JUDGEMENT_MODEL", "gemini-2.5-pro")
+
         vertexai.init(project=project_id, location=location)
         self.model = GenerativeModel(model_name)
 

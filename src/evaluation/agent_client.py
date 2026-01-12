@@ -106,8 +106,8 @@ class AgentClient:
 
     @retry(
         retry=retry_if_exception_type(RetryableAPIError),
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=2, min=4, max=60),
+        stop=stop_after_attempt(10),  # Increased from 5 to 10 for better reliability
+        wait=wait_exponential(multiplier=2, min=4, max=120),  # Increased max from 60s to 120s
         before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
         reraise=True
     )

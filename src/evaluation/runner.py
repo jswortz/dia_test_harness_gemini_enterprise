@@ -15,7 +15,8 @@ class TestRunner:
         comparator: SQLComparator,
         judge: JudgementModel,
         output_path: str,
-        schema_description: str = ""
+        schema_description: str = "",
+        use_flexible_scoring: bool = False
     ):
         self.loader = loader
         self.client = client
@@ -23,6 +24,7 @@ class TestRunner:
         self.judge = judge
         self.output_path = output_path
         self.schema_description = schema_description
+        self.use_flexible_scoring = use_flexible_scoring
         self.results = []
 
     def parse_response(self, raw_response: List[Dict]) -> Dict[str, str]:
@@ -157,15 +159,35 @@ class TestRunner:
             is_match = self.comparator.compare(generated_sql, expected_sql)
 
             explanation = None
+            score_details = None
+
             if not is_match:
-                explanation = self.judge.explain_difference(
-                    question,
-                    generated_sql,
-                    expected_sql,
-                    thoughts=thoughts,
-                    agent_response=agent_response,
-                    schema_info=self.schema_description
-                )
+                if self.use_flexible_scoring:
+                    # Use flexible 100-point rubric
+                    score_result = self.judge.score_sql_similarity(
+                        question,
+                        generated_sql,
+                        expected_sql,
+                        thoughts=thoughts,
+                        agent_response=agent_response,
+                        schema_info=self.schema_description
+                    )
+                    score_details = {
+                        'total_score': score_result['total_score'],
+                        'category_scores': score_result['category_scores'],
+                        'verdict': score_result['verdict']
+                    }
+                    explanation = score_result['explanation']
+                else:
+                    # Use legacy binary judgment
+                    explanation = self.judge.explain_difference(
+                        question,
+                        generated_sql,
+                        expected_sql,
+                        thoughts=thoughts,
+                        agent_response=agent_response,
+                        schema_info=self.schema_description
+                    )
 
             latency = time.time() - start_time
 
@@ -182,6 +204,11 @@ class TestRunner:
                 "timestamp": datetime.utcnow().isoformat(),
                 "raw_response": str(raw_response_1)[:1000]
             }
+
+            # Add score details if using flexible scoring
+            if score_details:
+                result['score_details'] = score_details
+
             return result
 
         except AgentAuthorizationError:
@@ -248,16 +275,36 @@ class TestRunner:
                 is_match = self.comparator.compare(generated_sql, expected_sql)
 
                 explanation = None
+                score_details = None
+
                 if not is_match:
                     print("  Mismatch detected. Asking for judgement...")
-                    explanation = self.judge.explain_difference(
-                        question,
-                        generated_sql,
-                        expected_sql,
-                        thoughts=thoughts,
-                        agent_response=agent_response,
-                        schema_info=self.schema_description
-                    )
+                    if self.use_flexible_scoring:
+                        # Use flexible 100-point rubric
+                        score_result = self.judge.score_sql_similarity(
+                            question,
+                            generated_sql,
+                            expected_sql,
+                            thoughts=thoughts,
+                            agent_response=agent_response,
+                            schema_info=self.schema_description
+                        )
+                        score_details = {
+                            'total_score': score_result['total_score'],
+                            'category_scores': score_result['category_scores'],
+                            'verdict': score_result['verdict']
+                        }
+                        explanation = score_result['explanation']
+                    else:
+                        # Use legacy binary judgment
+                        explanation = self.judge.explain_difference(
+                            question,
+                            generated_sql,
+                            expected_sql,
+                            thoughts=thoughts,
+                            agent_response=agent_response,
+                            schema_info=self.schema_description
+                        )
 
                 latency = time.time() - start_time
 
@@ -274,6 +321,11 @@ class TestRunner:
                     "timestamp": datetime.utcnow().isoformat(),
                     "raw_response": str(raw_response_1)[:1000] # Keep first response for debug context
                 }
+
+                # Add score details if using flexible scoring
+                if score_details:
+                    result['score_details'] = score_details
+
                 self.results.append(result)
 
             except AgentAuthorizationError:
@@ -300,14 +352,18 @@ class TestRunner:
         """
         Calculates accuracy metrics from test results.
 
+        Supports both legacy binary judgment and flexible 100-point scoring.
+
         Returns:
             dict with keys:
                 - total: total test cases
                 - exact_match: count where is_match=True
-                - semantically_equivalent: count where "EQUIVALENT" in explanation
-                - failures: count where "DIFFERENT" in explanation or no SQL generated
+                - semantically_equivalent: count where EQUIVALENT or MOSTLY_CORRECT
+                - failures: count where DIFFERENT/PARTIALLY_CORRECT/etc or no SQL generated
                 - accuracy: (exact_match + semantically_equivalent) / total * 100
                 - error_count: count of tests with errors
+                - avg_score: average score (0-100) if using flexible scoring
+                - score_breakdown: count by verdict type if using flexible scoring
         """
         if results is None:
             results = self.results
@@ -317,6 +373,17 @@ class TestRunner:
         semantically_equivalent = 0
         failures = 0
         error_count = 0
+
+        # Track flexible scoring metrics
+        scores = []
+        verdict_counts = {
+            'EQUIVALENT': 0,
+            'MOSTLY_CORRECT': 0,
+            'PARTIALLY_CORRECT': 0,
+            'MOSTLY_WRONG': 0,
+            'COMPLETELY_WRONG': 0
+        }
+        using_flexible_scoring = False
 
         for result in results:
             # Skip error cases
@@ -328,25 +395,48 @@ class TestRunner:
             # Exact match
             if result.get('is_match', False):
                 exact_match += 1
-            # Semantic equivalence via LLM judge
+                scores.append(100)  # Exact match = 100 points
+                continue
+
+            # Check for flexible scoring
+            if result.get('score_details'):
+                using_flexible_scoring = True
+                score_data = result['score_details']
+                total_score = score_data['total_score']
+                verdict = score_data['verdict']
+
+                scores.append(total_score)
+                verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
+
+                # Count EQUIVALENT and MOSTLY_CORRECT as semantically equivalent
+                if verdict in ['EQUIVALENT', 'MOSTLY_CORRECT']:
+                    semantically_equivalent += 1
+                else:
+                    failures += 1
+
+            # Legacy binary judgment via explanation text
             elif result.get('explanation'):
                 explanation = result['explanation'].upper()
                 if 'EQUIVALENT' in explanation:
                     semantically_equivalent += 1
+                    scores.append(100)  # Assume 100 for backward compatibility
                 elif 'DIFFERENT' in explanation:
                     failures += 1
+                    scores.append(0)  # Assume 0 for backward compatibility
                 else:
                     # Unclear judgment
                     failures += 1
+                    scores.append(0)
             else:
                 # No explanation and no match means likely no SQL generated or comparison failed
                 failures += 1
+                scores.append(0)
 
         # Calculate accuracy percentage
         successful = exact_match + semantically_equivalent
         accuracy = (successful / total * 100) if total > 0 else 0.0
 
-        return {
+        metrics = {
             'total': total,
             'exact_match': exact_match,
             'semantically_equivalent': semantically_equivalent,
@@ -354,6 +444,13 @@ class TestRunner:
             'error_count': error_count,
             'accuracy': round(accuracy, 2)
         }
+
+        # Add flexible scoring metrics if applicable
+        if using_flexible_scoring and scores:
+            metrics['avg_score'] = round(sum(scores) / len(scores), 2)
+            metrics['score_breakdown'] = {k: v for k, v in verdict_counts.items() if v > 0}
+
+        return metrics
 
     def extract_failures(self, results: List[Dict] = None) -> List[Dict]:
         """

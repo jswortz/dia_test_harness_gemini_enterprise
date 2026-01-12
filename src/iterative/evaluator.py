@@ -11,6 +11,7 @@ Integrates:
 from typing import List, Dict, Any, Tuple
 import sys
 import os
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import time
@@ -66,7 +67,8 @@ class SingleAgentEvaluator:
         output_path: str = None,
         timestamp: str = None,
         max_workers: int = 10,
-        schema_description: str = None
+        schema_description: str = None,
+        use_flexible_scoring: bool = None
     ):
         """
         Initialize evaluator.
@@ -80,6 +82,8 @@ class SingleAgentEvaluator:
             timestamp: Timestamp string for filenames (auto-generated if None)
             max_workers: Maximum number of parallel workers for test execution (default: 10)
             schema_description: Database schema description for context in judgement (optional but recommended)
+            use_flexible_scoring: Use 100-point flexible rubric instead of binary pass/fail
+                                  (default: from USE_FLEXIBLE_SCORING env var or True)
         """
         self.agent_id = agent_id
         self.project_id = project_id
@@ -87,6 +91,11 @@ class SingleAgentEvaluator:
         self.engine_id = engine_id
         self.max_workers = max_workers
         self.schema_description = schema_description or ""
+
+        # Determine flexible scoring setting
+        if use_flexible_scoring is None:
+            use_flexible_scoring = os.getenv("USE_FLEXIBLE_SCORING", "true").lower() == "true"
+        self.use_flexible_scoring = use_flexible_scoring
 
         # Generate timestamped filename if not provided
         if output_path is None:
@@ -117,14 +126,15 @@ class SingleAgentEvaluator:
         vertex_location = get_vertex_ai_location(location)
         self.judge = JudgementModel(project_id, vertex_location)
 
-        # Create TestRunner with schema description
+        # Create TestRunner with schema description and flexible scoring option
         self.runner = TestRunner(
             loader=self.loader,
             client=self.client,
             comparator=self.comparator,
             judge=self.judge,
             output_path=output_path,
-            schema_description=self.schema_description
+            schema_description=self.schema_description,
+            use_flexible_scoring=self.use_flexible_scoring
         )
 
         # Thread-safe lock for result aggregation

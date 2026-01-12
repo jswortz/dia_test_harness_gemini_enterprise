@@ -56,6 +56,7 @@ DIA_ENGINE_ID=your-engine-id
 BQ_DATASET_ID=your-dataset-id
 DIA_AGENT_ID=  # ⚠️ ADD THIS AFTER DEPLOYING (see Step 1 below)
 JUDGEMENT_MODEL=gemini-3-flash-preview  # Optional: LLM for SQL semantic comparison (default: gemini-2.5-pro)
+USE_FLEXIBLE_SCORING=true  # Enable 100-point SQL rubric (default: true)
 ```
 
 **Configuration Options:**
@@ -65,6 +66,16 @@ JUDGEMENT_MODEL=gemini-3-flash-preview  # Optional: LLM for SQL semantic compari
   - `gemini-2.5-pro`: Higher quality but slower and more expensive
   - `gemini-1.5-flash`: Faster alternative
   - Default: `gemini-2.5-pro` if not specified
+- `USE_FLEXIBLE_SCORING`: SQL evaluation method (**recommended: `true`**)
+  - `true` (default): **100-point flexible rubric** - Recognizes partial correctness across 6 categories
+    - **Table Selection** (25 pts): Correct tables identified
+    - **Join Logic** (20 pts): Proper table relationships
+    - **Filter Accuracy** (20 pts): WHERE clause correctness
+    - **Aggregation** (15 pts): GROUP BY, aggregation functions
+    - **Column Selection** (10 pts): SELECT clause accuracy
+    - **Formatting** (10 pts): Syntax, aliases, readability
+  - `false`: Binary pass/fail - Query either matches exactly or is semantically equivalent
+  - **Why flexible scoring?** Provides granular feedback for optimization, recognizes incremental improvements, and helps identify specific weaknesses in agent configuration
 
 ## Quick Start
 

@@ -275,6 +275,46 @@ Counterexample: If products has [Electronics, Electronics, Clothing],
                 Generated returns [Electronics, Electronics, Clothing] (3 rows)
 ```
 
+### Flexible Scoring (100-Point Rubric)
+
+**Default Evaluation Method** - Recognizes partial correctness instead of binary pass/fail:
+
+**Example: Partially Correct Query**
+```sql
+Expected:  SELECT market_name, SUM(sales)
+           FROM sales_data
+           INNER JOIN markets ON sales_data.market_id = markets.id
+           WHERE date >= '2025-01-01' AND date <= '2025-01-31'
+           GROUP BY market_name
+
+Generated: SELECT market_name, SUM(sales)
+           FROM sales_data
+           INNER JOIN markets ON sales_data.market_id = markets.id
+           WHERE date >= '2025-01-01'
+           GROUP BY market_name
+
+Flexible Score: 75/100
+  ✓ Table Selection: 25/25 (Correct tables)
+  ✓ Join Logic: 20/20 (Proper join condition)
+  ✗ Filter Accuracy: 10/20 (Missing end date filter)
+  ✓ Aggregation: 15/15 (Correct SUM and GROUP BY)
+  ✓ Column Selection: 10/10 (Correct columns)
+  ✓ Formatting: 5/10 (Good structure, minor style issues)
+
+Binary Score: 0/100 (Would be marked as complete failure)
+```
+
+**Why Use Flexible Scoring?**
+- **Granular Feedback**: Identifies exactly which parts of SQL generation need improvement
+- **Incremental Progress**: Tracks improvements even when query isn't perfect
+- **Better Optimization**: AI can focus on specific weaknesses (e.g., "improve filter logic")
+- **Realistic Evaluation**: Real-world queries often have minor issues but still provide value
+
+**When to Use Binary Scoring** (`USE_FLEXIBLE_SCORING=false`):
+- Production validation where only perfect queries are acceptable
+- Compliance scenarios requiring exact SQL matches
+- When you want strict pass/fail metrics
+
 ### Benefits for Optimization
 
 1. **Reduced False Negatives** - Recognizes valid SQL with different syntax → higher accuracy

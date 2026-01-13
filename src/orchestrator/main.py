@@ -342,7 +342,8 @@ def deploy(config_file):
 @click.option('--max-workers', default=10, help='Maximum number of parallel workers for test execution (default: 10)')
 @click.option('--auto-accept', is_flag=True, help='Automatically approve all AI-suggested improvements')
 @click.option('--clear-prior-results', is_flag=True, help='Clear all prior results before starting optimization')
-def optimize(config_file, golden_set, test_set, max_iterations, num_repeats, max_workers, auto_accept, clear_prior_results):
+@click.option('--agent-id', default=None, help='Agent ID to optimize (overrides DIA_AGENT_ID env var)')
+def optimize(config_file, golden_set, test_set, max_iterations, num_repeats, max_workers, auto_accept, clear_prior_results, agent_id):
     """
     Run iterative optimization for a single agent.
 
@@ -484,7 +485,8 @@ def optimize(config_file, golden_set, test_set, max_iterations, num_repeats, max
         max_iterations=max_iterations,
         num_repeats=num_repeats,
         max_workers=max_workers,
-        auto_accept=auto_accept
+        auto_accept=auto_accept,
+        agent_id=agent_id
     )
 
     optimizer.run()

@@ -23,16 +23,18 @@ class TrajectoryTracker:
     Provides comparison capabilities to analyze improvements or regressions.
     """
 
-    def __init__(self, agent_name: str = "baseline", output_path: str = None, timestamp: str = None):
+    def __init__(self, agent_name: str = "baseline", agent_id: str = None, output_path: str = None, timestamp: str = None):
         """
         Initialize tracker.
 
         Args:
             agent_name: Name of the agent being optimized
+            agent_id: Numeric agent ID (optional)
             output_path: Path to save trajectory history JSON (auto-generated with timestamp if None)
             timestamp: Timestamp string to use for filename (auto-generated if None)
         """
         self.agent_name = agent_name
+        self.agent_id = agent_id
 
         # Generate timestamped filename if output_path not provided
         if output_path is None:
@@ -44,6 +46,7 @@ class TrajectoryTracker:
         self.timestamp = timestamp
         self.history = {
             "agent_name": agent_name,
+            "agent_id": agent_id,
             "start_time": datetime.utcnow().isoformat(),
             "iterations": []
         }

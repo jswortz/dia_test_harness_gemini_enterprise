@@ -270,66 +270,102 @@ class TrajectoryVisualizer:
         Returns:
             Path to saved chart if save=True, else None
         """
-        evaluations = self._get_iteration_metrics()
-        if not evaluations:
+        iterations_data = self.trajectory_data.get("iterations", [])
+        if not iterations_data:
             logger.warning("No data available for metric_breakdown plot")
             return None
 
         iterations = []
         exact_matches = []
         semantic_matches = []
+        partial_credit = []
         failures = []
 
-        for eval_data in evaluations:
-            iteration = eval_data.get("iteration", len(iterations))
+        for iteration in iterations_data:
+            iter_num = iteration.get("iteration", len(iterations))
+            results = iteration.get("results", [])
 
-            # Compute metrics from train data
-            total = eval_data.get("total_cases", 0)
-            correct = eval_data.get("correct", 0)
-            failed = total - correct
+            if not results:
+                continue
 
-            # For now, assume all correct are exact matches
-            # (semantic match breakdown not available in current data structure)
-            exact = correct
-            semantic = 0
+            # Categorize results based on score and verdict
+            exact = 0  # Perfect score (100/100)
+            semantic = 0  # Semantic match but not perfect (verdict=EQUIVALENT, score >= 80, score < 100)
+            partial = 0  # Partial credit (score 60-79)
+            failed = 0  # Failed (score < 60)
 
-            iterations.append(f"Iter {iteration}")
+            for result in results:
+                score_details = result.get("score_details", {})
+                total_score = score_details.get("total_score", 0)
+                verdict = score_details.get("verdict", "DIFFERENT")
+
+                if total_score == 100:
+                    exact += 1
+                elif total_score >= 80 and verdict == "EQUIVALENT":
+                    semantic += 1
+                elif total_score >= 60:
+                    partial += 1
+                else:
+                    failed += 1
+
+            iterations.append(f"Iter {iter_num}")
             exact_matches.append(exact)
             semantic_matches.append(semantic)
+            partial_credit.append(partial)
             failures.append(failed)
+
+        if not iterations:
+            logger.warning("No iteration data for metric_breakdown")
+            return None
 
         fig, ax = plt.subplots(figsize=self.figsize)
 
         x = np.arange(len(iterations))
         width = 0.6
 
-        # Stacked bars
-        p1 = ax.bar(x, exact_matches, width, label="Exact Match", color="green", alpha=0.8)
+        # Stacked bars with 4 categories
+        colors = {
+            'exact': '#06A77D',      # Green - perfect
+            'semantic': '#118AB2',   # Blue - semantically correct
+            'partial': '#FCBF49',    # Yellow - partial credit
+            'failed': '#E63946'      # Red - failed
+        }
+
+        p1 = ax.bar(x, exact_matches, width, label="Exact Match (100)", color=colors['exact'], alpha=0.9)
         p2 = ax.bar(
             x,
             semantic_matches,
             width,
             bottom=exact_matches,
-            label="Semantic Match",
-            color="orange",
-            alpha=0.8,
+            label="Semantic Match (80-99)",
+            color=colors['semantic'],
+            alpha=0.9,
         )
         p3 = ax.bar(
             x,
-            failures,
+            partial_credit,
             width,
             bottom=np.array(exact_matches) + np.array(semantic_matches),
-            label="Failed",
-            color="red",
-            alpha=0.8,
+            label="Partial Credit (60-79)",
+            color=colors['partial'],
+            alpha=0.9,
+        )
+        p4 = ax.bar(
+            x,
+            failures,
+            width,
+            bottom=np.array(exact_matches) + np.array(semantic_matches) + np.array(partial_credit),
+            label="Failed (<60)",
+            color=colors['failed'],
+            alpha=0.9,
         )
 
         ax.set_xlabel("Iteration", fontsize=12)
-        ax.set_ylabel("Count", fontsize=12)
-        ax.set_title("Metric Breakdown by Iteration", fontsize=14, fontweight="bold")
+        ax.set_ylabel("Number of Queries", fontsize=12)
+        ax.set_title("Query Results Breakdown by Iteration", fontsize=14, fontweight="bold")
         ax.set_xticks(x)
         ax.set_xticklabels(iterations)
-        ax.legend(fontsize=10)
+        ax.legend(fontsize=10, loc='upper left')
         ax.grid(True, alpha=0.3, axis="y")
 
         plt.tight_layout()
@@ -593,8 +629,318 @@ class TrajectoryVisualizer:
             plt.close(fig)
             return None
 
+    def plot_multi_metric_comparison(self, save: bool = True) -> Optional[str]:
+        """Generate line chart showing exact match, semantic match, and pass rates over iterations.
+
+        This chart provides a comprehensive view of performance across different quality thresholds:
+        - Exact Match Rate: Percentage of queries with perfect score (100/100)
+        - Semantic Match Rate: Percentage with score >= 80 AND verdict=EQUIVALENT
+        - Overall Pass Rate: Percentage with score >= 80 (includes both exact and semantic)
+
+        Args:
+            save: Whether to save the chart to disk
+
+        Returns:
+            Path to saved chart if save=True, else None
+        """
+        iterations_data = self.trajectory_data.get("iterations", [])
+        if not iterations_data:
+            logger.warning("No iteration data for multi_metric_comparison")
+            return None
+
+        iterations = []
+        exact_match_rates = []
+        semantic_match_rates = []
+        pass_rates = []
+        avg_scores = []
+
+        for iteration in iterations_data:
+            iter_num = iteration.get("iteration", len(iterations))
+            results = iteration.get("results", [])
+
+            if not results:
+                continue
+
+            total = len(results)
+            exact_count = 0
+            semantic_count = 0
+            pass_count = 0
+            scores = []
+
+            for result in results:
+                score_details = result.get("score_details", {})
+                total_score = score_details.get("total_score", 0)
+                verdict = score_details.get("verdict", "DIFFERENT")
+
+                scores.append(total_score)
+
+                if total_score == 100:
+                    exact_count += 1
+                    pass_count += 1
+                elif total_score >= 80:
+                    pass_count += 1
+                    if verdict == "EQUIVALENT":
+                        semantic_count += 1
+
+            iterations.append(iter_num)
+            exact_match_rates.append((exact_count / total * 100) if total > 0 else 0)
+            semantic_match_rates.append((semantic_count / total * 100) if total > 0 else 0)
+            pass_rates.append((pass_count / total * 100) if total > 0 else 0)
+            avg_scores.append(sum(scores) / len(scores) if scores else 0)
+
+        if not iterations:
+            logger.warning("No data for multi_metric_comparison")
+            return None
+
+        # Create figure with dual y-axes
+        fig, ax1 = plt.subplots(figsize=(14, 7))
+        ax2 = ax1.twinx()
+
+        # Plot rates on left y-axis
+        line1 = ax1.plot(iterations, exact_match_rates, marker='o', linewidth=2.5, markersize=8,
+                         color='#06A77D', label='Exact Match Rate (%)', linestyle='-')
+        line2 = ax1.plot(iterations, semantic_match_rates, marker='s', linewidth=2.5, markersize=8,
+                         color='#118AB2', label='Semantic Match Rate (%)', linestyle='-')
+        line3 = ax1.plot(iterations, pass_rates, marker='^', linewidth=2.5, markersize=8,
+                         color='#073B4C', label='Overall Pass Rate (≥80)', linestyle='--')
+
+        # Plot average scores on right y-axis
+        line4 = ax2.plot(iterations, avg_scores, marker='D', linewidth=2, markersize=7,
+                         color='#F77F00', label='Avg Score (/100)', linestyle=':')
+
+        # Configure left y-axis (percentages)
+        ax1.set_xlabel("Iteration", fontsize=13, fontweight='bold')
+        ax1.set_ylabel("Pass Rate (%)", fontsize=13, fontweight='bold', color='#073B4C')
+        ax1.set_ylim(0, 105)
+        ax1.tick_params(axis='y', labelcolor='#073B4C')
+        ax1.grid(True, alpha=0.3, linestyle='--')
+
+        # Configure right y-axis (scores)
+        ax2.set_ylabel("Average Score (out of 100)", fontsize=13, fontweight='bold', color='#F77F00')
+        ax2.set_ylim(0, 105)
+        ax2.tick_params(axis='y', labelcolor='#F77F00')
+
+        # Add reference line at 80% threshold
+        ax1.axhline(y=80, color='green', linestyle='-.', alpha=0.4, linewidth=1.5, label='Pass Threshold (80)')
+
+        # Combine legends
+        lines = line1 + line2 + line3 + line4
+        labels = [l.get_label() for l in lines]
+        ax1.legend(lines, labels, loc='upper left', fontsize=10, framealpha=0.9)
+
+        ax1.set_title("Performance Metrics: Exact Match vs Semantic Similarity vs Flexible Scoring",
+                     fontsize=14, fontweight="bold", pad=20)
+
+        plt.tight_layout()
+
+        if save:
+            output_path = self.output_dir / "multi_metric_comparison.png"
+            fig.savefig(output_path, dpi=self.dpi, bbox_inches="tight")
+            logger.info(f"Saved multi_metric_comparison chart to {output_path}")
+            plt.close(fig)
+            return str(output_path)
+        else:
+            plt.close(fig)
+            return None
+
+    def plot_average_score_over_time(self, save: bool = True) -> Optional[str]:
+        """Generate line chart of average rubric scores over iterations.
+
+        Args:
+            save: Whether to save the chart to disk
+
+        Returns:
+            Path to saved chart if save=True, else None
+        """
+        iterations_data = self.trajectory_data.get("iterations", [])
+        if not iterations_data:
+            logger.warning("No iteration data for average_score_over_time")
+            return None
+
+        iterations = []
+        avg_scores = []
+
+        for iteration in iterations_data:
+            results = iteration.get("results", [])
+            if not results:
+                continue
+
+            scores = [r.get("score_details", {}).get("total_score", 0) for r in results]
+            if scores:
+                avg_score = sum(scores) / len(scores)
+                iterations.append(iteration.get("iteration", len(iterations)))
+                avg_scores.append(avg_score)
+
+        if not avg_scores:
+            logger.warning("No score data available")
+            return None
+
+        fig, ax = plt.subplots(figsize=self.figsize)
+
+        ax.plot(iterations, avg_scores, marker="o", linewidth=2, markersize=8, color="#2E86AB")
+        ax.fill_between(iterations, avg_scores, alpha=0.3, color="#2E86AB")
+
+        ax.set_xlabel("Iteration", fontsize=12)
+        ax.set_ylabel("Average Score (out of 100)", fontsize=12)
+        ax.set_title("Average Rubric Score Over Iterations", fontsize=14, fontweight="bold")
+        ax.set_ylim(0, 105)
+        ax.axhline(y=80, color='green', linestyle='--', alpha=0.5, label='Pass Threshold (80)')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        plt.tight_layout()
+
+        if save:
+            output_path = self.output_dir / "average_score_over_time.png"
+            fig.savefig(output_path, dpi=self.dpi, bbox_inches="tight")
+            logger.info(f"Saved average_score_over_time chart to {output_path}")
+            plt.close(fig)
+            return str(output_path)
+        else:
+            plt.close(fig)
+            return None
+
+    def plot_rubric_category_breakdown(self, save: bool = True) -> Optional[str]:
+        """Generate stacked bar chart of rubric category scores over iterations.
+
+        Args:
+            save: Whether to save the chart to disk
+
+        Returns:
+            Path to saved chart if save=True, else None
+        """
+        iterations_data = self.trajectory_data.get("iterations", [])
+        if not iterations_data:
+            logger.warning("No iteration data for rubric_category_breakdown")
+            return None
+
+        # Calculate average category scores per iteration
+        iterations = []
+        categories = {
+            'data_source': [],
+            'filtering': [],
+            'columns': [],
+            'grouping': [],
+            'ordering': [],
+            'format': []
+        }
+
+        for iteration in iterations_data:
+            results = iteration.get("results", [])
+            if not results:
+                continue
+
+            iter_num = iteration.get("iteration", len(iterations))
+            iterations.append(iter_num)
+
+            # Average scores across all queries for this iteration
+            for cat in categories.keys():
+                scores = [r.get("score_details", {}).get("category_scores", {}).get(cat, 0) for r in results]
+                avg_score = sum(scores) / len(scores) if scores else 0
+                categories[cat].append(avg_score)
+
+        if not iterations:
+            logger.warning("No category score data available")
+            return None
+
+        fig, ax = plt.subplots(figsize=(14, 7))
+
+        # Create stacked bar chart
+        x = np.arange(len(iterations))
+        width = 0.6
+
+        colors = ['#E63946', '#F77F00', '#FCBF49', '#06A77D', '#118AB2', '#073B4C']
+        labels = ['Data Source (/20)', 'Filtering (/25)', 'Columns (/20)', 'Grouping (/15)', 'Ordering (/10)', 'Format (/10)']
+
+        bottom = np.zeros(len(iterations))
+        for i, (cat, label, color) in enumerate(zip(categories.keys(), labels, colors)):
+            ax.bar(x, categories[cat], width, label=label, bottom=bottom, color=color)
+            bottom += np.array(categories[cat])
+
+        ax.set_xlabel("Iteration", fontsize=12)
+        ax.set_ylabel("Average Score", fontsize=12)
+        ax.set_title("Rubric Category Breakdown by Iteration", fontsize=14, fontweight="bold")
+        ax.set_xticks(x)
+        ax.set_xticklabels([f"Iter {i}" for i in iterations])
+        ax.axhline(y=80, color='green', linestyle='--', alpha=0.5, linewidth=2, label='Pass Threshold (80)')
+        ax.legend(loc='upper left', fontsize=10)
+        ax.set_ylim(0, 105)
+        ax.grid(True, alpha=0.3, axis='y')
+
+        plt.tight_layout()
+
+        if save:
+            output_path = self.output_dir / "rubric_category_breakdown.png"
+            fig.savefig(output_path, dpi=self.dpi, bbox_inches="tight")
+            logger.info(f"Saved rubric_category_breakdown chart to {output_path}")
+            plt.close(fig)
+            return str(output_path)
+        else:
+            plt.close(fig)
+            return None
+
+    def plot_score_distribution_histogram(self, save: bool = True) -> Optional[str]:
+        """Generate histogram showing distribution of scores across all queries.
+
+        Args:
+            save: Whether to save the chart to disk
+
+        Returns:
+            Path to saved chart if save=True, else None
+        """
+        iterations_data = self.trajectory_data.get("iterations", [])
+        if not iterations_data:
+            logger.warning("No iteration data for score_distribution")
+            return None
+
+        # Get latest iteration scores
+        latest_iteration = iterations_data[-1]
+        results = latest_iteration.get("results", [])
+        if not results:
+            logger.warning("No results in latest iteration")
+            return None
+
+        scores = [r.get("score_details", {}).get("total_score", 0) for r in results]
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+        # Create histogram with color-coded bins
+        bins = [0, 60, 80, 95, 100]
+        colors = ['#E63946', '#FCBF49', '#06A77D', '#073B4C']
+        labels = ['0-59 (Fail)', '60-79 (Partial)', '80-94 (Good)', '95-100 (Excellent)']
+
+        counts, edges, patches = ax.hist(scores, bins=bins, edgecolor='black', linewidth=1.2)
+
+        # Color the bars
+        for patch, color in zip(patches, colors):
+            patch.set_facecolor(color)
+
+        ax.set_xlabel("Score Range", fontsize=12)
+        ax.set_ylabel("Number of Queries", fontsize=12)
+        ax.set_title(f"Score Distribution (Iteration {latest_iteration.get('iteration', 0)})", fontsize=14, fontweight="bold")
+        ax.set_xticks([30, 70, 87.5, 97.5])
+        ax.set_xticklabels(labels)
+        ax.grid(True, alpha=0.3, axis='y')
+
+        # Add statistics
+        avg_score = sum(scores) / len(scores)
+        ax.axvline(avg_score, color='red', linestyle='--', linewidth=2, label=f'Average: {avg_score:.1f}')
+        ax.legend()
+
+        plt.tight_layout()
+
+        if save:
+            output_path = self.output_dir / "score_distribution_histogram.png"
+            fig.savefig(output_path, dpi=self.dpi, bbox_inches="tight")
+            logger.info(f"Saved score_distribution_histogram chart to {output_path}")
+            plt.close(fig)
+            return str(output_path)
+        else:
+            plt.close(fig)
+            return None
+
     def generate_all_charts(self) -> Dict[str, Optional[str]]:
-        """Generate all available charts.
+        """Generate all available charts including flexible scoring charts.
 
         Calls all chart generation methods and returns paths to saved charts.
 
@@ -640,6 +986,31 @@ class TrajectoryVisualizer:
         except Exception as e:
             logger.error(f"Error generating train_vs_test_accuracy: {e}")
             chart_paths["train_vs_test_accuracy"] = None
+
+        # Flexible scoring charts
+        try:
+            chart_paths["multi_metric_comparison"] = self.plot_multi_metric_comparison(save=True)
+        except Exception as e:
+            logger.error(f"Error generating multi_metric_comparison: {e}")
+            chart_paths["multi_metric_comparison"] = None
+
+        try:
+            chart_paths["average_score_over_time"] = self.plot_average_score_over_time(save=True)
+        except Exception as e:
+            logger.error(f"Error generating average_score_over_time: {e}")
+            chart_paths["average_score_over_time"] = None
+
+        try:
+            chart_paths["rubric_category_breakdown"] = self.plot_rubric_category_breakdown(save=True)
+        except Exception as e:
+            logger.error(f"Error generating rubric_category_breakdown: {e}")
+            chart_paths["rubric_category_breakdown"] = None
+
+        try:
+            chart_paths["score_distribution_histogram"] = self.plot_score_distribution_histogram(save=True)
+        except Exception as e:
+            logger.error(f"Error generating score_distribution_histogram: {e}")
+            chart_paths["score_distribution_histogram"] = None
 
         # Log summary
         generated = [k for k, v in chart_paths.items() if v is not None]

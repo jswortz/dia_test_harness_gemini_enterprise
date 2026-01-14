@@ -350,23 +350,28 @@ def optimize(config_file, golden_set, test_set, max_iterations, num_repeats, max
     PREREQUISITE: Run 'dia-harness deploy' FIRST to deploy and authorize the agent.
 
     This command:
-    1. Finds the existing deployed agent by name
+    1. Finds the existing deployed agent by name (or ID)
     2. Runs evaluation against the golden set (with repeats)
     3. Analyzes failures and suggests prompt improvements
     4. Updates the agent via PATCH API
     5. Repeats until user stops or accuracy reaches 100%
 
-    FEATURES:
-    - Repeat measurements (--num-repeats): Run each test multiple times for reliability
-    - Test dataset (--test-set): Evaluate on held-out data to detect overfitting
-    - Auto-accept (--auto-accept): Fully automated optimization without manual approval
-
-    Results are tracked in results/trajectory_history_<timestamp>.json with charts in results/charts/
+    ARGS:
+    - --config-file: Path to agent configuration JSON (optional if agent-id provided)
+    - --golden-set: Path to training set (golden set) [REQUIRED]
+    - --agent-id: Agent ID to optimize (overrides DIA_AGENT_ID env var)
+    - --test-set: Optional path to held-out test set
+    - --max-iterations: Maximum number of optimization iterations (default: 10)
+    - --num-repeats: Number of times to repeat each test (default: 3)
+    - --max-workers: Maximum number of parallel workers (default: 10)
+    - --auto-accept: Automatically approve all AI-suggested improvements
+    - --clear-prior-results: Clear all prior results before starting
 
     WORKFLOW:
     1. First time: dia-harness deploy --config-file configs/baseline_config.json
     2. Authorize agent via Gemini Enterprise UI (one-time)
     3. Always:     dia-harness optimize --config-file configs/baseline_config.json --golden-set data/golden_set.json
+       OR:         dia-harness optimize --agent-id <ID> --golden-set data/golden_set.json
     """
     # Clear prior results if flag is set
     if clear_prior_results:

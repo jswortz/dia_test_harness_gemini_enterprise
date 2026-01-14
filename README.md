@@ -163,6 +163,8 @@ dia-harness optimize \
 
 ## Optimization Workflow
 
+![Optimization Workflow](dia-harness-stick-diagram.png)
+
 Each optimization run follows this process:
 
 ```

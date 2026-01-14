@@ -10,7 +10,6 @@ Generates comprehensive markdown reports with:
 """
 
 import json
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -84,18 +83,18 @@ class OptimizationReportGenerator:
         report_path = self.output_dir / f"OPTIMIZATION_REPORT_{run_id}.md"
         report_path.write_text(report_content)
 
-        # Generate assist token registry
-        self._generate_assist_token_registry(trajectory_history, agent_id, run_id)
-
         return str(report_path)
 
     def _generate_header(self, agent_id: str, iteration_count: int, run_id: str) -> str:
         """Generate report header."""
         import os
+
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Get judgement model from environment
+        # Get AI models from environment
         judgement_model = os.getenv("JUDGEMENT_MODEL", "gemini-2.5-pro")
+        improvement_model = os.getenv("PROMPT_IMPROVEMENT_MODEL", "gemini-3-pro-preview")
+        config_model = os.getenv("CONFIG_ANALYSIS_MODEL", "gemini-3-pro-preview")
 
         return f"""# Agent Optimization Report
 
@@ -104,17 +103,22 @@ class OptimizationReportGenerator:
 **Report Generated:** {timestamp}
 **Total Iterations:** {iteration_count}
 **Framework:** Data Insights Agent (DIA) Test Harness
-**Judgement Model:** {judgement_model}
+
+## AI Models Used
+
+- **Judgement Model:** {judgement_model} (SQL equivalence evaluation)
+- **Prompt Improvement:** {improvement_model} (failure analysis & suggestions)
+- **Config Analysis:** {config_model} (field recommendation)
 
 ## Report Features
 
 This comprehensive optimization report includes:
 - ✅ **Metrics & Charts**: Accuracy trends, metric breakdowns, and performance analysis
 - ✅ **Configuration Links**: Direct links to all deployed agent configurations
-- ✅ **Execution Logs**: References to log files and Cloud Console links
+- ✅ **Executions Logs**: References to log files and Cloud Console links
 - ✅ **Expandable Question-Level Performance**: Click each failure to see detailed SQL comparisons and AI judgement analysis
-- ✅ **AI Model Attribution**: All AI models used for judgements and improvements are documented
-- ✅ **Iteration Feedback**: Detailed reasoning for why each configuration change was made
+- ✅ **Row-Level Repeat Format**: Compare scores across R1, R2, R3 repeats in single table
+- ✅ **Detailed Rubric Breakdown**: 6-category scoring (Data Source, Filtering, Columns, Grouping, Ordering, Format)
 
 ---
 """
@@ -199,32 +203,30 @@ This comprehensive optimization report includes:
         return normalized
 
     def _generate_executive_summary(self, trajectory: Dict) -> str:
-        """Generate executive summary with key results including flexible scoring."""
+        """Generate executive summary with key results."""
         iterations = trajectory.get("iterations", [])
         if not iterations:
             return "## Executive Summary\n\nNo iterations completed."
 
-        # Extract metrics across iterations
+        # Extract metrics across iterations and track best iteration
         train_accuracies = []
         test_accuracies = []
-        train_avg_scores = []
+        best_train_idx = 0
+        best_train_score = 0.0
 
-        for iteration in iterations:
+        for idx, iteration in enumerate(iterations):
             # Normalize to new format
             iteration = self._normalize_iteration(iteration)
 
             evals = iteration.get("evaluation", {})
             if "train" in evals:
-                train_accuracies.append(evals["train"].get("accuracy", 0.0))
+                train_acc = evals["train"].get("accuracy", 0.0)
+                train_accuracies.append(train_acc)
 
-                # Calculate average score from results
-                results = iteration.get("results", [])
-                if results:
-                    scores = [r.get("score_details", {}).get("total_score", 0) for r in results]
-                    avg_score = sum(scores) / len(scores) if scores else 0
-                    train_avg_scores.append(avg_score)
-                else:
-                    train_avg_scores.append(0)
+                # Track best iteration
+                if train_acc > best_train_score:
+                    best_train_score = train_acc
+                    best_train_idx = idx
 
             if "test" in evals:
                 test_accuracies.append(evals["test"].get("accuracy", 0.0))
@@ -234,10 +236,6 @@ This comprehensive optimization report includes:
         final_train = train_accuracies[-1] if train_accuracies else 0.0
         train_improvement = final_train - initial_train
 
-        initial_score = train_avg_scores[0] if train_avg_scores else 0.0
-        final_score = train_avg_scores[-1] if train_avg_scores else 0.0
-        score_improvement = final_score - initial_score
-
         initial_test = test_accuracies[0] if test_accuracies else 0.0
         final_test = test_accuracies[-1] if test_accuracies else 0.0
         test_improvement = final_test - initial_test
@@ -245,34 +243,48 @@ This comprehensive optimization report includes:
         # Build summary table
         summary = f"""## Executive Summary
 
-### Flexible Scoring Enabled
-
-This optimization used **100-point flexible scoring** that recognizes partial correctness:
-- Queries are scored across 6 categories (Data Source, Filtering, Columns, Grouping, Ordering, Format)
-- Pass threshold: 80/100 points
-- Provides more nuanced feedback than binary pass/fail
-
 ### Key Results
 
 | Metric | Initial | Final | Improvement |
 |--------|---------|-------|-------------|
-| **Avg Score (Flexible)** | {initial_score:.1f}/100 | {final_score:.1f}/100 | {score_improvement:+.1f} |
-| **Pass Rate (≥80pts)** | {initial_train:.1%} | {final_train:.1%} | {train_improvement:+.1%} |
+| **Train Accuracy** | {initial_train:.2%} | {final_train:.2%} | {train_improvement:+.2%} |
 """
 
         if test_accuracies:
-            summary += f"| **Test Pass Rate** | {initial_test:.1%} | {final_test:.1%} | {test_improvement:+.1%} |\n"
+            summary += f"| **Test Accuracy** | {initial_test:.2%} | {final_test:.2%} | {test_improvement:+.2%} |\n"
 
         summary += f"| **Iterations** | - | {len(iterations)} | - |\n"
 
-        # Add ASCII chart of progress (using avg scores)
-        summary += "\n### Progress Chart (Avg Score)\n\n```\n"
-        if train_avg_scores:
-            # Normalize scores to 0-1 range for chart
-            normalized_scores = [s / 100.0 for s in train_avg_scores]
-            summary += self._generate_ascii_chart(normalized_scores, "Average Score")
+        # Add winning configuration callout
+        start_time = trajectory.get("start_time", "")
+        timestamp = ""
+        if start_time:
+            try:
+                dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                timestamp = dt.strftime("%Y%m%d_%H%M%S")
+            except:
+                pass
+
+        summary += "\n### 🏆 Best Configuration\n\n"
+        summary += f"> **Iteration {best_train_idx}** achieved the highest training accuracy: **{best_train_score:.2%}**\n"
+        summary += f">\n"
+
+        if timestamp:
+            config_path = f"configs/config_iteration_{best_train_idx}_final_{timestamp}.json"
+            summary += f"> 📁 **Configuration File:** [`{config_path}`]({config_path})\n"
         else:
-            summary += self._generate_ascii_chart(train_accuracies, "Pass Rate")
+            summary += f"> 📁 **Configuration File:** `configs/config_iteration_{best_train_idx}_final_*.json`\n"
+
+        if best_train_idx == len(iterations) - 1:
+            summary += f">\n"
+            summary += f"> ✅ **Status:** This is the final iteration configuration (recommended for deployment)\n"
+        else:
+            summary += f">\n"
+            summary += f"> ℹ️ **Note:** Peak performance at iteration {best_train_idx}, but final iteration is {len(iterations)-1}\n"
+
+        # Add ASCII chart of progress
+        summary += "\n### Progress Chart\n\n```\n"
+        summary += self._generate_ascii_chart(train_accuracies, "Train Accuracy")
         summary += "```\n"
 
         return summary
@@ -324,15 +336,13 @@ This optimization used **100-point flexible scoring** that recognizes partial co
             if not path.exists():
                 continue
 
-            # Use relative path from the report location (within the same run directory)
-            # Extract just the filename and prepend 'charts/' directory
-            path_str = str(path)
-            if 'charts/' in path_str:
-                # Extract just the filename from the charts directory
-                filename = path.name
-                rel_path = f"charts/{filename}"
-            else:
-                rel_path = path.name
+            # Use relative path from the report directory (output_dir)
+            # The report is in output_dir, charts are in output_dir/charts/
+            try:
+                rel_path = path.relative_to(self.output_dir)
+            except ValueError:
+                # If can't make relative, just use the filename with charts/ prefix
+                rel_path = Path("charts") / path.name
 
             # Infer chart title from filename
             title = path.stem.replace("_", " ").title()
@@ -418,15 +428,10 @@ This optimization used **100-point flexible scoring** that recognizes partial co
                 section += f"\n**Changes Made:** {iteration['prompt_changes']}\n"
 
             # Add AI model information if available
-            import os
-            judgement_model = os.getenv("JUDGEMENT_MODEL", "gemini-2.5-pro")
-            improvement_model = os.getenv("PROMPT_IMPROVEMENT_MODEL", "gemini-3-pro-preview")
-            config_model = os.getenv("CONFIG_ANALYSIS_MODEL", "gemini-3-pro-preview")
-
             section += f"\n**AI Models Used:**\n"
-            section += f"- **SQL Judgement**: {judgement_model} (for semantic SQL equivalence evaluation)\n"
-            section += f"- **Prompt Improvement**: {improvement_model} (for analyzing failures and suggesting improvements)\n"
-            section += f"- **Config Analysis**: {config_model} (for recommending configuration changes)\n"
+            section += f"- **SQL Judgement**: Gemini 2.5 Pro (for semantic SQL equivalence evaluation)\n"
+            section += f"- **Prompt Improvement**: Gemini 2.0 Flash Exp (for analyzing failures and suggesting improvements)\n"
+            section += f"- **Config Analysis**: Gemini 2.0 Flash Exp (for recommending configuration changes)\n"
 
             # Show overall iteration feedback (AI reasoning for changes)
             if iteration.get("prompt_changes") and idx > 0:
@@ -450,122 +455,273 @@ This optimization used **100-point flexible scoring** that recognizes partial co
         return section
 
     def _format_results_table(self, iteration: Dict, eval_data: Dict) -> str:
-        """Format color-coded results table with flexible scoring rubric.
+        """Format detailed results table with rubric breakdown per question and repeat.
 
         Args:
             iteration: Iteration data containing all test results
             eval_data: Evaluation data with failures and successes
 
         Returns:
-            Markdown table with color-coded results and rubric scores
+            Markdown table with detailed rubric scores per question and repeat
         """
-        # Get all results from the iteration (including successes and failures)
-        all_results = iteration.get("results", [])
-        if not all_results:
-            # Fallback: try to reconstruct from failures
-            all_results = eval_data.get("failures", [])
+        import json
 
-        if not all_results:
-            return "\n**Results Table:** No test results available\n\n"
+        # Try to load detailed results from eval files
+        iter_num = iteration.get("iteration", 0)
+        run_id = self.output_dir.name.replace('run_', '')
 
-        section = "\n### Flexible Scoring Rubric\n\n"
-        section += "**100-Point Scoring System:**\n"
-        section += "- 🟢 **95-100**: Excellent (near perfect)\n"
-        section += "- 🟡 **80-94**: Good (passes threshold)\n"
-        section += "- 🟠 **60-79**: Partial (some issues)\n"
-        section += "- 🔴 **0-59**: Failed (major issues)\n\n"
+        # Look for per-iteration eval files first (new format)
+        eval_file_pattern = f"eval_train_iter{iter_num}_{run_id}.jsonl"
+        repeat_files = sorted(self.output_dir.glob(f"{eval_file_pattern}.repeat*"))
 
-        section += "**Rubric Categories:**\n"
-        section += "| Category | Points | Description |\n"
-        section += "|----------|--------|-------------|\n"
-        section += "| Data Source | 20 | Correct tables and joins |\n"
-        section += "| Filtering | 25 | Accurate WHERE clauses |\n"
-        section += "| Columns | 20 | Correct SELECT fields |\n"
-        section += "| Grouping | 15 | Proper GROUP BY and aggregation |\n"
-        section += "| Ordering | 10 | Correct ORDER BY and LIMIT |\n"
-        section += "| Format | 10 | Query structure and syntax |\n\n"
+        # Fallback to old format (single eval file with all iterations)
+        if not repeat_files:
+            repeat_files = sorted(self.output_dir.glob(f"eval_train_{run_id}.jsonl.repeat*"))
 
-        # Group results by question (aggregate across repeats)
-        questions_map = {}
-        for result in all_results:
-            question_id = result.get("question_id") or result.get("question", "Unknown")
-            question = result.get("question", "Unknown")
-            repeat_num = result.get("repeat_num", 1)
+        if not repeat_files:
+            # No detailed results available, use old simple table
+            all_results = iteration.get("results", [])
+            if not all_results:
+                return "\n**Results Table:** No detailed test results available\n\n"
+            return self._format_simple_results_table(all_results)
 
-            if question_id not in questions_map:
-                questions_map[question_id] = {
-                    "question": question,
-                    "repeats": []
-                }
-            questions_map[question_id]["repeats"].append({
-                "repeat_num": repeat_num,
-                "score": result.get("score_details", {}).get("total_score", 0),
-                "score_details": result.get("score_details", {}),
-                "result": result
-            })
+        # Load all repeat results
+        all_repeat_results = {}
+        for repeat_file in repeat_files:
+            repeat_num = int(repeat_file.name.split('repeat')[-1])
+            results = []
+            try:
+                with open(repeat_file, 'r') as f:
+                    for line in f:
+                        if line.strip():
+                            results.append(json.loads(line))
+                all_repeat_results[repeat_num] = results
+            except Exception as e:
+                continue
 
-        section += "### Question-Level Results (Aggregated Across Repeats)\n\n"
-        section += "| # | Question | Avg Score | Status | Repeats | Breakdown |\n"
-        section += "|---|----------|-----------|--------|---------|------------|\n"
+        if not all_repeat_results:
+            return "\n**Results Table:** No detailed test results available\n\n"
 
-        for i, (question_id, qdata) in enumerate(sorted(questions_map.items()), 1):
-            question = qdata["question"][:50]  # Truncate long questions
-            repeats = qdata["repeats"]
+        # Generate rubric-focused table with color-coded feedback
+        section = "\n### Detailed Question-Level Results\n\n"
 
-            # Calculate average score across repeats
-            scores = [r["score"] for r in repeats]
+        # Get all unique questions from first repeat
+        first_repeat = all_repeat_results[sorted(all_repeat_results.keys())[0]]
+        num_questions = len(first_repeat)
+        num_repeats = len(all_repeat_results)
+
+        # Calculate overall summary stats
+        total_avg_score = 0
+        total_queries = 0
+
+        for repeat_num, results in all_repeat_results.items():
+            for result in results:
+                total_avg_score += result.get('score_details', {}).get('total_score', 0)
+                total_queries += 1
+
+        overall_avg = total_avg_score / total_queries if total_queries > 0 else 0
+        section += f"**Overall Summary:** Average Score: {overall_avg:.1f}/100 across {num_repeats} repeats ({total_queries} total queries)\n\n"
+
+        # Helper function to color-code scores
+        def color_code_score(score, max_score):
+            """Return emoji indicator based on score performance."""
+            if score == 0:
+                return "⚫"  # Not attempted or no SQL
+            pct = (score / max_score) if max_score > 0 else 0
+            if pct >= 0.9:
+                return "🟢"  # Excellent
+            elif pct >= 0.7:
+                return "🟡"  # Good
+            elif pct >= 0.5:
+                return "🟠"  # Partial
+            else:
+                return "🔴"  # Poor
+
+        # Rubric-focused table with embedded repeats
+        section += "#### Rubric Category Performance (All Repeats)\n\n"
+
+        # Build header with rubric categories
+        section += "| # | Question | R# | Total | DS | Filt | Col | Grp | Ord | Fmt |\n"
+        section += "|---|----------|-------|-------|----|----|----|----|----|----|\n"
+
+        # Organize results by question
+        for q_idx in range(num_questions):
+            # Get question from first repeat
+            question = first_repeat[q_idx].get('question', 'Unknown')[:35]
+
+            # Show each repeat as a separate sub-row
+            for repeat_num in sorted(all_repeat_results.keys()):
+                results = all_repeat_results[repeat_num]
+                if q_idx < len(results):
+                    result = results[q_idx]
+                    score_details = result.get('score_details', {})
+                    total_score = score_details.get('total_score', 0)
+                    category_scores = score_details.get('category_scores', {})
+
+                    # Extract category scores
+                    ds = category_scores.get('data_source', 0)
+                    filt = category_scores.get('filtering', 0)
+                    col = category_scores.get('columns', 0)
+                    grp = category_scores.get('grouping', 0)
+                    ord = category_scores.get('ordering', 0)
+                    fmt = category_scores.get('format', 0)
+
+                    # Color code each category
+                    ds_str = f"{color_code_score(ds, 20)} {ds}/20"
+                    filt_str = f"{color_code_score(filt, 25)} {filt}/25"
+                    col_str = f"{color_code_score(col, 20)} {col}/20"
+                    grp_str = f"{color_code_score(grp, 15)} {grp}/15"
+                    ord_str = f"{color_code_score(ord, 10)} {ord}/10"
+                    fmt_str = f"{color_code_score(fmt, 10)} {fmt}/10"
+
+                    # Overall score color
+                    total_color = color_code_score(total_score, 100)
+
+                    # Only show question text on first repeat row
+                    if repeat_num == sorted(all_repeat_results.keys())[0]:
+                        q_text = f"{question}"
+                    else:
+                        q_text = '""'
+
+                    section += f"| {q_idx+1} | {q_text} | R{repeat_num} | {total_color} {total_score}/100 | {ds_str} | {filt_str} | {col_str} | {grp_str} | {ord_str} | {fmt_str} |\n"
+
+            # Add average row after all repeats
+            if num_repeats > 1:
+                # Calculate averages across repeats
+                avg_total = 0
+                avg_ds = 0
+                avg_filt = 0
+                avg_col = 0
+                avg_grp = 0
+                avg_ord = 0
+                avg_fmt = 0
+
+                for repeat_num in sorted(all_repeat_results.keys()):
+                    results = all_repeat_results[repeat_num]
+                    if q_idx < len(results):
+                        result = results[q_idx]
+                        score_details = result.get('score_details', {})
+                        avg_total += score_details.get('total_score', 0)
+                        category_scores = score_details.get('category_scores', {})
+                        avg_ds += category_scores.get('data_source', 0)
+                        avg_filt += category_scores.get('filtering', 0)
+                        avg_col += category_scores.get('columns', 0)
+                        avg_grp += category_scores.get('grouping', 0)
+                        avg_ord += category_scores.get('ordering', 0)
+                        avg_fmt += category_scores.get('format', 0)
+
+                avg_total = avg_total / num_repeats
+                avg_ds = avg_ds / num_repeats
+                avg_filt = avg_filt / num_repeats
+                avg_col = avg_col / num_repeats
+                avg_grp = avg_grp / num_repeats
+                avg_ord = avg_ord / num_repeats
+                avg_fmt = avg_fmt / num_repeats
+
+                # Color code averages
+                total_color = color_code_score(avg_total, 100)
+                ds_str = f"{color_code_score(avg_ds, 20)} {avg_ds:.0f}/20"
+                filt_str = f"{color_code_score(avg_filt, 25)} {avg_filt:.0f}/25"
+                col_str = f"{color_code_score(avg_col, 20)} {avg_col:.0f}/20"
+                grp_str = f"{color_code_score(avg_grp, 15)} {avg_grp:.0f}/15"
+                ord_str = f"{color_code_score(avg_ord, 10)} {avg_ord:.0f}/10"
+                fmt_str = f"{color_code_score(avg_fmt, 10)} {avg_fmt:.0f}/10"
+
+                section += f"| | *Avg* | **μ** | {total_color} **{avg_total:.0f}/100** | {ds_str} | {filt_str} | {col_str} | {grp_str} | {ord_str} | {fmt_str} |\n"
+
+                # Add visual separator between question groups
+                if q_idx < num_questions - 1:
+                    section += "| | | | | | | | | | |\n"
+
+        section += "\n**Column Legend:**\n"
+        section += "- **R#** = Repeat number (R1, R2, R3)\n"
+        section += "- **Total** = Overall score out of 100\n"
+        section += "- **DS** = Data Source (max 20 pts)\n"
+        section += "- **Filt** = Filtering Logic (max 25 pts)\n"
+        section += "- **Col** = Column Selection (max 20 pts)\n"
+        section += "- **Grp** = Grouping & Granularity (max 15 pts)\n"
+        section += "- **Ord** = Ordering & Limits (max 10 pts)\n"
+        section += "- **Fmt** = Output Format (max 10 pts)\n"
+        section += "- **μ** = Average across repeats\n\n"
+
+        section += "**Color Coding:**\n"
+        section += "- 🟢 Excellent (≥90%) | 🟡 Good (70-89%) | 🟠 Partial (50-69%) | 🔴 Poor (<50%) | ⚫ No SQL\n\n"
+
+        # Add cross-repeat aggregated summary
+        section += "#### Aggregated Summary (All Repeats)\n\n"
+
+        # Collect all questions and their scores across repeats
+        question_aggregates = {}
+        for repeat_num, results in all_repeat_results.items():
+            for result in results:
+                q_id = result.get('question_id', result.get('question', ''))
+                question = result.get('question', 'Unknown')
+                score = result.get('score_details', {}).get('total_score', 0)
+
+                if q_id not in question_aggregates:
+                    question_aggregates[q_id] = {
+                        'question': question,
+                        'scores': []
+                    }
+
+                question_aggregates[q_id]['scores'].append(score)
+
+        section += "| Question | Avg Score | Min | Max | σ |\n"
+        section += "|----------|-----------|-----|-----|---|\n"
+
+        for q_id, agg in question_aggregates.items():
+            question = agg['question'][:50]
+            scores = agg['scores']
             avg_score = sum(scores) / len(scores) if scores else 0
+            min_score = min(scores) if scores else 0
+            max_score = max(scores) if scores else 0
+            std_dev = (sum((x - avg_score) ** 2 for x in scores) / len(scores)) ** 0.5 if len(scores) > 1 else 0
 
-            # Determine color and status based on average score
-            if avg_score >= 95:
-                status_icon = "🟢"
-                status_text = "Excellent"
-            elif avg_score >= 80:
-                status_icon = "🟡"
-                status_text = "Pass"
-            elif avg_score >= 60:
-                status_icon = "🟠"
-                status_text = "Partial"
+            section += f"| {question} | {avg_score:.1f} | {min_score} | {max_score} | {std_dev:.1f} |\n"
+
+        section += "\n"
+
+        return section
+
+    def _format_simple_results_table(self, all_results: list) -> str:
+        """Format simple results table when detailed data not available."""
+        section = "\n**Question-Level Results:**\n\n"
+        section += "| # | Question | Status | Match Type |\n"
+        section += "|---|----------|--------|------------|\n"
+
+        for i, result in enumerate(all_results, 1):
+            question = result.get("question", "Unknown")[:60]
+            is_match = result.get("is_match", False)
+            explanation = result.get("explanation", "")
+            issue = result.get("issue", result.get("error", "Unknown"))
+
+            if is_match:
+                status = "🟢 Exact"
+                match_type = "Exact Match"
+            elif "EQUIVALENT" in explanation:
+                status = "🟡 Equivalent"
+                match_type = "Semantic Match"
+            elif "DIFFERENT" in explanation or not is_match:
+                status = "🔴 Different"
+                if issue and issue != "Unknown" and issue != "Unknown error":
+                    match_type = issue[:30] + "..." if len(issue) > 30 else issue
+                else:
+                    match_type = "Different SQL"
             else:
-                status_icon = "🔴"
-                status_text = "Fail"
+                status = "⚪ Unknown"
+                match_type = issue[:30] if issue else "Unknown"
 
-            # Show individual repeat scores
-            repeat_scores_str = ", ".join([f"R{r['repeat_num']}:{r['score']}" for r in sorted(repeats, key=lambda x: x["repeat_num"])])
+            section += f"| {i} | {question} | {status} | {match_type} |\n"
 
-            # Build breakdown string using first repeat (they should be similar)
-            category_scores = repeats[0]["score_details"].get("category_scores", {})
-            if category_scores:
-                d = category_scores.get('data_source', 0)
-                f = category_scores.get('filtering', 0)
-                c = category_scores.get('columns', 0)
-                g = category_scores.get('grouping', 0)
-                o = category_scores.get('ordering', 0)
-                fmt = category_scores.get('format', 0)
-                breakdown = f"D:{d}/20 F:{f}/25 C:{c}/20 G:{g}/15 O:{o}/10 Fmt:{fmt}/10"
-            else:
-                # Fallback for old format
-                is_match = repeats[0]["result"].get("is_match", False)
-                breakdown = "Exact" if is_match else "Different"
-
-            section += f"| {i} | {question}... | **{avg_score:.1f}**/100 | {status_icon} {status_text} | {repeat_scores_str} | {breakdown} |\n"
-
-        # Calculate summary statistics
         total = len(all_results)
-        scores = [r.get("score_details", {}).get("total_score", 0) for r in all_results]
-        avg_score = sum(scores) / len(scores) if scores else 0
-        excellent = sum(1 for s in scores if s >= 95)
-        good = sum(1 for s in scores if 80 <= s < 95)
-        partial = sum(1 for s in scores if 60 <= s < 80)
-        failed = sum(1 for s in scores if s < 60)
+        exact_matches = sum(1 for r in all_results if r.get("is_match", False))
+        semantic_matches = sum(1 for r in all_results if not r.get("is_match", False) and "EQUIVALENT" in r.get("explanation", ""))
+        different = total - exact_matches - semantic_matches
 
-        section += f"\n**Summary:** {total} tests | Avg: **{avg_score:.1f}/100** | "
-        section += f"🟢 {excellent} excellent | "
-        section += f"🟡 {good} good | "
-        section += f"🟠 {partial} partial | "
-        section += f"🔴 {failed} failed\n\n"
-
-        section += f"**Breakdown Legend:** D=Data Source (/20), F=Filtering (/25), C=Columns (/20), G=Grouping (/15), O=Ordering (/10), Fmt=Format (/10)\n\n"
+        section += f"\n**Summary:** {total} tests | "
+        section += f"🟢 {exact_matches} exact | "
+        section += f"🟡 {semantic_matches} semantic | "
+        section += f"🔴 {different} different\n\n"
 
         return section
 
@@ -587,40 +743,48 @@ This optimization used **100-point flexible scoring** that recognizes partial co
             # Use HTML details/summary tags for expandable question-level performance
             for i, failure in enumerate(failures):
                 question = failure.get("question", "Unknown")
-                error = failure.get("issue", "Unknown error")
+
+                # Get most descriptive error message
+                error = failure.get("error", "")
+                issue = failure.get("issue", "")
                 explanation = failure.get("explanation", "")
                 expected_sql = failure.get("expected_sql", "")
                 generated_sql = failure.get("generated_sql", "")
-                score_details = failure.get("score_details", {})
-                total_score = score_details.get("total_score", 0)
 
-                # Determine color based on score
-                if total_score >= 80:
-                    score_icon = "🟡"
-                elif total_score >= 60:
-                    score_icon = "🟠"
+                # Determine best error description
+                if explanation and "Category" in explanation:
+                    # Extract verdict from explanation
+                    if "COMPLETELY_WRONG" in explanation:
+                        error_summary = "Completely wrong SQL logic"
+                    elif "PARTIALLY_CORRECT" in explanation:
+                        error_summary = "Partially correct (low rubric scores)"
+                    elif "MOSTLY_CORRECT" in explanation:
+                        error_summary = "Mostly correct (minor issues)"
+                    else:
+                        error_summary = "Failed rubric criteria"
+                elif not generated_sql or generated_sql.strip() == "":
+                    # Check for OAuth authorization errors
+                    if error and "OAuth authorization" in error:
+                        error_summary = "Agent requires OAuth authorization (setup required)"
+                    elif issue and "OAuth authorization" in issue:
+                        error_summary = "Agent requires OAuth authorization (setup required)"
+                    elif error:
+                        error_summary = f"No SQL generated: {error}"
+                    elif issue:
+                        error_summary = f"No SQL generated: {issue}"
+                    else:
+                        error_summary = "No SQL generated"
+                elif issue and issue != "Unknown" and issue != "Unknown error":
+                    error_summary = issue
+                elif error and error != "Unknown" and error != "Unknown error":
+                    error_summary = error
                 else:
-                    score_icon = "🔴"
+                    error_summary = "SQL mismatch"
 
-                # Create expandable section with score
+                # Create expandable section
                 section += f"<details>\n"
-                section += f"<summary><b>{i+1}. {question}</b> - {score_icon} <b>{total_score}/100</b> - <i>{error[:60]}...</i></summary>\n\n"
-
-                # Show rubric breakdown if available
-                if score_details and score_details.get("category_scores"):
-                    section += f"**Rubric Breakdown:**\n"
-                    category_scores = score_details["category_scores"]
-                    section += f"| Category | Score | Max |\n"
-                    section += f"|----------|-------|-----|\n"
-                    section += f"| Data Source | {category_scores.get('data_source', 0)} | 20 |\n"
-                    section += f"| Filtering | {category_scores.get('filtering', 0)} | 25 |\n"
-                    section += f"| Columns | {category_scores.get('columns', 0)} | 20 |\n"
-                    section += f"| Grouping | {category_scores.get('grouping', 0)} | 15 |\n"
-                    section += f"| Ordering | {category_scores.get('ordering', 0)} | 10 |\n"
-                    section += f"| Format | {category_scores.get('format', 0)} | 10 |\n"
-                    section += f"| **TOTAL** | **{total_score}** | **100** |\n\n"
-
-                section += f"**Issue:** {error}\n\n"
+                section += f"<summary><b>{i+1}. {question}</b> - <i>{error_summary[:80]}</i></summary>\n\n"
+                section += f"**Issue:** {error_summary}\n\n"
 
                 if expected_sql:
                     section += f"**Expected SQL:**\n```sql\n{expected_sql}\n```\n\n"
@@ -637,7 +801,7 @@ This optimization used **100-point flexible scoring** that recognizes partial co
             # Traditional truncated format
             for i, failure in enumerate(failures[:max_failures]):
                 question = failure.get("question", "Unknown")
-                error = failure.get("issue", "Unknown error")
+                error = failure.get("error", "Unknown error")
 
                 section += f"{i+1}. **Q:** {question}\n"
                 section += f"   **Error:** {error[:150]}\n"
@@ -654,14 +818,10 @@ This optimization used **100-point flexible scoring** that recognizes partial co
             return "## Configuration Evolution\n\nNo configurations tracked."
 
         section = "## Configuration Evolution\n\n"
-        section += "Summary of configuration changes and performance across iterations.\n\n"
 
-        # Performance-focused table with flexible scoring metrics
-        section += "| Iter | Avg Score | Pass Rate | Exact | Semantic | Examples | Prompt Changed | Schema Changed |\n"
-        section += "|------|-----------|-----------|-------|----------|----------|----------------|----------------|\n"
-
-        prev_prompt = None
-        prev_schema = None
+        # Expanded table with all config fields
+        section += "| Iter | Train | Test | Prompt | Schema | Examples | Py Prompt | Tables |\n"
+        section += "|------|-------|------|--------|--------|----------|-----------|--------|\n"
 
         for idx, iteration in enumerate(iterations):
             # Normalize to new format
@@ -670,76 +830,32 @@ This optimization used **100-point flexible scoring** that recognizes partial co
             evals = iteration.get("evaluation", {})
             config = iteration.get("configuration", iteration.get("config", {}))  # Backward compatible
 
-            # Get flexible scoring metrics (with backward compatibility)
-            train_eval = evals.get("train", {})
+            train_acc = evals.get("train", {}).get("accuracy", 0.0)
+            test_acc = evals.get("test", {}).get("accuracy", 0.0)
 
-            # Try to get flexible scoring metrics, fallback to old format
-            avg_score = train_eval.get("avg_score")
-            pass_rate = train_eval.get("pass_rate")
-
-            # If not available, calculate from accuracy (old format)
-            if avg_score is None and "accuracy" in train_eval:
-                # Old format: accuracy is 0-1, convert to percentage for display
-                accuracy = train_eval.get("accuracy", 0.0) * 100
-                avg_score = accuracy  # Use accuracy as score proxy
-                pass_rate = accuracy  # Use accuracy as pass rate proxy
-            else:
-                avg_score = avg_score or 0.0
-                pass_rate = pass_rate or 0.0
-
-            exact_match = train_eval.get("exact_match", 0)
-            semantic = train_eval.get("semantically_equivalent", 0)
-
-            # Config details
-            num_examples = len(config.get("nl2sql_examples", []))
-            current_prompt = config.get("nl2sql_prompt", "")
-            current_schema = config.get("schema_description", "")
-
-            # Detect changes
-            prompt_changed = "✓" if idx == 0 else ("✓ Yes" if current_prompt != prev_prompt else "—")
-            schema_changed = "✓" if idx == 0 else ("✓ Yes" if current_schema != prev_schema else "—")
-
-            section += (
-                f"| {idx} | {avg_score:.1f}/100 | {pass_rate:.1f}% | "
-                f"{exact_match} | {semantic} | {num_examples} | "
-                f"{prompt_changed} | {schema_changed} |\n"
-            )
-
-            prev_prompt = current_prompt
-            prev_schema = current_schema
-
-        # Add expanded details section
-        section += "\n### Configuration Details by Iteration\n\n"
-
-        for idx, iteration in enumerate(iterations):
-            iteration = self._normalize_iteration(iteration)
-            config = iteration.get("configuration", iteration.get("config", {}))
-
-            section += f"**Iteration {idx}:**\n"
-
-            # Count characters for size reference
+            # Config field summaries
             prompt_len = len(config.get("nl2sql_prompt", ""))
             schema_len = len(str(config.get("schema_description", ""))) if config.get("schema_description") else 0
             num_examples = len(config.get("nl2sql_examples", []))
-
-            section += f"- Prompt: {prompt_len:,} characters\n"
-            section += f"- Schema: {schema_len:,} characters\n"
-            section += f"- Examples: {num_examples} SQL examples\n"
+            py_prompt_set = "Yes" if config.get("nl2py_prompt") else "No"
 
             # Table access
             allowed = len(config.get("allowed_tables", []))
             blocked = len(config.get("blocked_tables", []))
-            if allowed or blocked:
-                section += f"- Table Access: {allowed} allowed, {blocked} blocked\n"
-            else:
-                section += f"- Table Access: All tables\n"
+            tables_str = f"A:{allowed}/B:{blocked}" if (allowed or blocked) else "All"
 
-            # Python prompt
-            if config.get("nl2py_prompt"):
-                py_len = len(config.get("nl2py_prompt", ""))
-                section += f"- Python Prompt: Set ({py_len:,} characters)\n"
+            section += (
+                f"| {idx} | {train_acc:.1%} | {test_acc:.1%} | "
+                f"{prompt_len}ch | {schema_len}ch | {num_examples}ex | "
+                f"{py_prompt_set} | {tables_str} |\n"
+            )
 
-            section += "\n"
+        # Add legend
+        section += "\n**Legend:**\n"
+        section += "- Prompt/Schema: Character count\n"
+        section += "- Examples: Number of few-shot examples (ex)\n"
+        section += "- Py Prompt: Whether nl2py_prompt is set\n"
+        section += "- Tables: A=Allowed count, B=Blocked count\n"
 
         return section
 
@@ -840,25 +956,18 @@ This optimization used **100-point flexible scoring** that recognizes partial co
         section += "### Generated Artifacts\n\n"
         section += "**Trajectory and Metrics:**\n"
         if timestamp:
-            section += f"- [`trajectory_history_{timestamp}.json`](trajectory_history_{timestamp}.json) - Complete optimization trajectory with all iterations\n"
+            section += f"- [`trajectory_history_{timestamp}.json`](trajectory_history_{timestamp}.json) - Complete optimization trajectory\n"
             section += f"- [`eval_train_{timestamp}.jsonl.repeat1`](eval_train_{timestamp}.jsonl.repeat1) - Training evaluation (repeat 1)\n"
-            section += f"- [`eval_train_{timestamp}.jsonl.repeat2`](eval_train_{timestamp}.jsonl.repeat2) - Training evaluation (repeat 2)\n"
-            section += f"- [`eval_train_{timestamp}.jsonl.repeat3`](eval_train_{timestamp}.jsonl.repeat3) - Training evaluation (repeat 3)\n"
-            section += f"- [`ASSIST_TOKEN_REGISTRY.md`](ASSIST_TOKEN_REGISTRY.md) - Debugging tokens for all queries with error categorization\n\n"
+            section += f"- [`eval_train_{timestamp}.jsonl.repeat2`](eval_train_{timestamp}.jsonl.repeat2) - Training evaluation (repeat 2)\n\n"
         else:
-            section += f"- `trajectory_history_{agent_id}.json` - Complete optimization trajectory\n"
-            section += "- `eval_train_*.jsonl.repeat*` - Evaluation results\n"
-            section += "- `ASSIST_TOKEN_REGISTRY.md` - Assist tokens for debugging\n\n"
+            section += f"- `results/trajectory_history_{agent_id}.json` - Complete optimization trajectory\n"
+            section += "- `results/eval_train_*.jsonl.repeat*` - Evaluation results\n\n"
 
         # Add log file links
-        # Get project ID from environment or trajectory
-        import os
-        project_id = trajectory.get('project_id') or os.getenv('GOOGLE_CLOUD_PROJECT', 'your-project-id')
-
         section += "**Execution Logs:**\n"
-        section += "- Optimization execution logs available in terminal output or log files\n"
-        section += f"- [View agent in Cloud Console](https://console.cloud.google.com/gen-app-builder/agents?project={project_id})\n"
-        section += f"- [View BigQuery dataset](https://console.cloud.google.com/bigquery?project={project_id})\n\n"
+        section += "- Check results directory for phase1/phase2 test output logs\n"
+        section += "- Agent deployment logs available via Google Cloud Console\n"
+        section += "- [View agent in Cloud Console](https://console.cloud.google.com/gen-app-builder/engines)\n\n"
 
         # Config snapshots
         iterations = trajectory.get("iterations", [])
@@ -873,89 +982,39 @@ This optimization used **100-point flexible scoring** that recognizes partial co
 
         # Charts
         section += "**Visualizations:**\n"
-        section += "- [`charts/multi_metric_comparison.png`](charts/multi_metric_comparison.png) - **Multi-metric comparison** (exact match, semantic similarity, pass rate)\n"
-        section += "- [`charts/average_score_over_time.png`](charts/average_score_over_time.png) - **Average flexible scores** over iterations\n"
-        section += "- [`charts/rubric_category_breakdown.png`](charts/rubric_category_breakdown.png) - **Rubric category breakdown** by iteration\n"
-        section += "- [`charts/metric_breakdown.png`](charts/metric_breakdown.png) - **Query results breakdown** (exact/semantic/partial/failed)\n"
-        section += "- [`charts/score_distribution_histogram.png`](charts/score_distribution_histogram.png) - **Score distribution** histogram\n"
         section += "- [`charts/accuracy_over_time.png`](charts/accuracy_over_time.png) - Accuracy progression\n"
+        section += "- [`charts/metric_breakdown.png`](charts/metric_breakdown.png) - Metrics breakdown\n"
         section += "- [`charts/improvement_deltas.png`](charts/improvement_deltas.png) - Iteration-to-iteration changes\n"
         section += "- [`charts/question_heatmap.png`](charts/question_heatmap.png) - Per-question performance (if available)\n\n"
 
         # Reproduction commands
         section += "### Reproduction Commands\n\n"
         section += "To reproduce this optimization run:\n\n"
-
-        # Extract config name from trajectory
-        agent_name = trajectory.get("agent_name", "unknown")
-        config_file = "configs/mcd_config.json"  # Default
-        if "aggressive" in agent_name.lower():
-            config_file = "configs/mcd_config_aggressive.json"
-        elif "baseline" in agent_name.lower():
-            config_file = "configs/baseline_config.json"
-
-        # Get iteration count from trajectory
-        max_iterations = len(iterations) if iterations else 10
-
         section += "```bash\n"
-        section += "# 1. Set up environment\n"
+        section += "# Set up environment\n"
         section += "source .venv/bin/activate\n"
-        section += "export GOOGLE_CLOUD_PROJECT=your-project-id\n"
-        section += "export DIA_LOCATION=global\n"
-        section += "export DIA_ENGINE_ID=your-engine-id\n"
-        section += "export BQ_DATASET_ID=your-dataset-id\n\n"
+        section += "export GOOGLE_CLOUD_PROJECT=your-project-id\n\n"
 
-        section += "# 2. Deploy agent (one-time - if not already deployed)\n"
-        section += f"dia-harness deploy --config-file {config_file}\n\n"
-
-        section += "# 3. Authorize agent via Gemini Enterprise UI (one-time)\n"
-        section += "#    Visit the console link provided and grant BigQuery access\n\n"
-
-        section += "# 4. Run iterative optimization\n"
-        section += "dia-harness optimize \\\n"
+        section += "# Run iterative optimization\n"
+        section += "python scripts/run_iterative_optimizer.py \\\n"
         section += f"  --agent-id {agent_id} \\\n"
-        section += f"  --config-file {config_file} \\\n"
-        section += "  --golden-set data/golden_set.xlsx \\\n"
-        section += f"  --max-iterations {max_iterations} \\\n"
-        section += "  --num-repeats 3 \\\n"
-        section += "  --auto-accept\n\n"
-
-        section += "# Optional: Add test dataset for overfitting detection\n"
-        section += "# dia-harness optimize \\\n"
-        section += f"#   --agent-id {agent_id} \\\n"
-        section += f"#   --config-file {config_file} \\\n"
-        section += "#   --golden-set data/golden_set.xlsx \\\n"
-        section += "#   --test-set data/test_set.xlsx \\\n"
-        section += f"#   --max-iterations {max_iterations} \\\n"
-        section += "#   --num-repeats 3 \\\n"
-        section += "#   --auto-accept\n"
+        section += "  --train-set data/golden_set.json \\\n"
+        section += "  --test-set data/test_set.json \\\n"
+        section += "  --max-iterations 10 \\\n"
+        section += "  --repeat-measurements 3\n"
         section += "```\n\n"
 
         # Analysis commands
         section += "### Analysis Commands\n\n"
         section += "```bash\n"
+        section += "# View detailed iteration results\n"
+        section += "cat results/iteration_*.json | jq '.evaluation.train.accuracy'\n\n"
 
-        # Use actual run_id if available
-        run_dir = f"run_{timestamp}" if timestamp else "run_*"
-        traj_file = f"trajectory_history_{timestamp}.json" if timestamp else "trajectory_history_*.json"
+        section += "# Extract all failure cases\n"
+        section += "cat results/trajectory_history_*.json | jq '.iterations[].evaluation.train.failures'\n\n"
 
-        section += "# View trajectory metrics\n"
-        section += f"jq '.iterations[].evaluation.train' results/{run_dir}/{traj_file}\n\n"
-
-        section += "# Extract average scores per iteration\n"
-        section += f"jq '.iterations[] | {{iter: .iteration, score: .evaluation.train.avg_score, pass_rate: .evaluation.train.pass_rate}}' results/{run_dir}/{traj_file}\n\n"
-
-        section += "# View failures from specific iteration (e.g., iteration 0)\n"
-        section += f"jq '.iterations[0].evaluation.train.failures' results/{run_dir}/{traj_file}\n\n"
-
-        section += "# Count error types across all results\n"
-        section += f"cat results/{run_dir}/eval_train_{timestamp}.jsonl.repeat* | jq -s 'group_by(.generated_sql == \"\") | map({{no_sql: (.[0].generated_sql == \"\"), count: length}})'\n\n"
-
-        section += "# View assist tokens for failed queries\n"
-        section += f"cat results/{run_dir}/ASSIST_TOKEN_REGISTRY.md\n\n"
-
-        section += "# Compare prompt changes across iterations\n"
-        section += f"jq '.iterations[].configuration.nl2sql_prompt' results/{run_dir}/{traj_file}\n"
+        section += "# Compare configurations\n"
+        section += "cat results/trajectory_history_*.json | jq '.iterations[].configuration.nl2sql_prompt'\n"
         section += "```\n\n"
 
         # Timestamp
@@ -963,268 +1022,6 @@ This optimization used **100-point flexible scoring** that recognizes partial co
         section += f"*Report generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n"
 
         return section
-
-    def _generate_assist_token_registry(
-        self, trajectory_history: Dict, agent_id: str, run_id: str
-    ) -> str:
-        """Generate assist token registry for debugging.
-
-        Args:
-            trajectory_history: Optimization trajectory data
-            agent_id: ID of the agent
-            run_id: Run timestamp ID
-
-        Returns:
-            Path to generated registry file
-        """
-        iterations = trajectory_history.get("iterations", [])
-        agent_name = trajectory_history.get("agent_name", "unknown")
-
-        # Build registry content
-        content = f"""# Assist Token Registry
-## run_{run_id}
-
-**Agent Name:** {agent_name}
-**Agent ID:** {agent_id}
-**Timestamp:** {run_id}
-
----
-
-"""
-
-        # Check if we have per-iteration eval files (new format) or single eval file (old format)
-        has_per_iteration_files = any(
-            self.output_dir.glob(f"eval_train_iter*_{run_id}.jsonl*")
-        )
-
-        if not has_per_iteration_files:
-            # Old format: single eval file with repeats, no per-iteration files
-            # Load all results from repeat files
-            repeat_files = list(self.output_dir.glob(f"eval_train_{run_id}.jsonl.repeat*"))
-
-            all_results = []
-            for repeat_file in repeat_files:
-                try:
-                    with open(repeat_file, 'r') as f:
-                        for line in f:
-                            if line.strip():
-                                all_results.append(json.loads(line))
-                except Exception as e:
-                    continue
-
-            if all_results:
-                # Categorize all results
-                success_results = []
-                low_score_results = []
-                no_sql_results = []
-
-                for result in all_results:
-                    score_details = result.get("score_details", {})
-                    total_score = score_details.get("total_score", 0)
-                    generated_sql = result.get("generated_sql", "")
-
-                    if not generated_sql or generated_sql.strip() == "":
-                        no_sql_results.append(result)
-                    elif total_score < 60:
-                        low_score_results.append(result)
-                    else:
-                        success_results.append(result)
-
-                # Write combined section (all iterations)
-                total_queries = len(all_results)
-                tokens_captured = sum(1 for r in all_results if self._extract_assist_token(r))
-
-                content += f"## All Iterations Combined\n\n"
-                content += f"**Total Queries:** {total_queries}\n"
-                content += f"**Tokens Captured:** {tokens_captured}\n"
-                content += f"**Note:** Old format - results from all iterations and repeats combined\n\n"
-
-                # Success section
-                if success_results:
-                    content += f"### SUCCESS ({len(success_results)} results)\n\n"
-                    for result in success_results[:50]:  # Limit to first 50
-                        content += self._format_token_entry(result)
-                    if len(success_results) > 50:
-                        content += f"\n*... and {len(success_results) - 50} more successful results*\n\n"
-
-                # Low score section
-                if low_score_results:
-                    content += f"### LOW SCORE (<60 points) ({len(low_score_results)} results)\n\n"
-                    for result in low_score_results:
-                        content += self._format_token_entry(result, show_error=True)
-
-                # No SQL section
-                if no_sql_results:
-                    content += f"### NO SQL GENERATED ({len(no_sql_results)} results)\n\n"
-                    for result in no_sql_results[:50]:  # Limit to first 50
-                        content += self._format_token_entry(result, show_error=True)
-                    if len(no_sql_results) > 50:
-                        content += f"\n*... and {len(no_sql_results) - 50} more failures*\n\n"
-
-        else:
-            # New format: per-iteration eval files
-            # Process each iteration
-            for iter_data in iterations:
-                iter_num = iter_data.get("iteration", 0)
-
-                # Get evaluation results
-                eval_path = self.output_dir / f"eval_train_iter{iter_num}_{run_id}.jsonl"
-                if not eval_path.exists():
-                    # Check for repeat files
-                    repeat_files = list(self.output_dir.glob(f"eval_train_iter{iter_num}_{run_id}.jsonl.repeat*"))
-                    if not repeat_files:
-                        continue
-                    # Use first repeat file
-                    eval_path = repeat_files[0]
-
-                # Load evaluation results
-                results = []
-                try:
-                    with open(eval_path, 'r') as f:
-                        for line in f:
-                            if line.strip():
-                                results.append(json.loads(line))
-                except Exception as e:
-                    continue
-
-                # Categorize results
-                success_results = []
-                low_score_results = []
-                no_sql_results = []
-
-                for result in results:
-                    score_details = result.get("score_details", {})
-                    total_score = score_details.get("total_score", 0)
-                    generated_sql = result.get("generated_sql", "")
-
-                    if not generated_sql or generated_sql.strip() == "":
-                        no_sql_results.append(result)
-                    elif total_score < 60:
-                        low_score_results.append(result)
-                    else:
-                        success_results.append(result)
-
-                # Write iteration header
-                total_queries = len(results)
-                tokens_captured = sum(1 for r in results if self._extract_assist_token(r))
-
-                content += f"## Iteration {iter_num}\n\n"
-                content += f"**Total Queries:** {total_queries}\n"
-                content += f"**Tokens Captured:** {tokens_captured}\n\n"
-
-                # Success section
-                if success_results:
-                    content += f"### SUCCESS ({len(success_results)} tokens)\n\n"
-                    for result in success_results:
-                        content += self._format_token_entry(result)
-
-                # Low score section
-                if low_score_results:
-                    content += f"### LOW SCORE (<60 points) ({len(low_score_results)} tokens)\n\n"
-                    for result in low_score_results:
-                        content += self._format_token_entry(result, show_error=True)
-
-                # No SQL section
-                if no_sql_results:
-                    content += f"### NO SQL GENERATED ({len(no_sql_results)} tokens)\n\n"
-                    for result in no_sql_results:
-                        content += self._format_token_entry(result, show_error=True)
-
-                content += "---\n\n"
-
-        # Write registry file
-        registry_path = self.output_dir / "ASSIST_TOKEN_REGISTRY.md"
-        registry_path.write_text(content)
-
-        return str(registry_path)
-
-    def _extract_assist_token(self, result: Dict) -> Optional[str]:
-        """Extract assist token from result."""
-        # Try JSON field first
-        if "assist_token" in result:
-            return result["assist_token"]
-
-        # Try extracting from raw_response
-        raw_response = result.get("raw_response", "")
-        if raw_response:
-            # Convert to string if it's a dict
-            if isinstance(raw_response, dict):
-                raw_response = str(raw_response)
-
-            # Extract using regex
-            matches = re.findall(r"'assistToken':\s*'([^']+)'", raw_response)
-            if matches:
-                return matches[0]
-
-        return None
-
-    def _format_token_entry(self, result: Dict, show_error: bool = False) -> str:
-        """Format a single token entry."""
-        question = result.get("question", "Unknown question")
-        question_id = result.get("question_id", "unknown")
-        repeat_num = result.get("repeat_num", 1)
-        score_details = result.get("score_details", {})
-        total_score = score_details.get("total_score", 0)
-        generated_sql = result.get("generated_sql", "")
-        expected_sql = result.get("expected_sql", "")
-        assist_token = self._extract_assist_token(result)
-
-        # Truncate long questions for summary
-        question_summary = question[:80] if len(question) > 80 else question
-
-        entry = f"""<details>
-<summary><b>{question_summary}</b> - Score: {total_score}/100</summary>
-
-**Assist Token:** `{assist_token or 'Not captured'}`
-
-**Question ID:** {question_id}
-
-**Repeat:** {repeat_num}
-
-"""
-
-        if generated_sql:
-            entry += f"""**Generated SQL:**
-```sql
-{generated_sql.strip()}
-```
-
-"""
-        else:
-            entry += "**Generated SQL:** *(none - NO SQL GENERATED)*\n\n"
-
-        # Add category scores
-        category_scores = score_details.get("category_scores", {})
-        if category_scores:
-            entry += "**Category Scores:**\n"
-            entry += f"- data_source: {category_scores.get('data_source', 0)}/20\n"
-            entry += f"- filtering: {category_scores.get('filtering', 0)}/25\n"
-            entry += f"- columns: {category_scores.get('columns', 0)}/20\n"
-            entry += f"- grouping: {category_scores.get('grouping', 0)}/15\n"
-            entry += f"- ordering: {category_scores.get('ordering', 0)}/10\n"
-            entry += f"- format: {category_scores.get('format', 0)}/10\n\n"
-
-        # Show error details if requested
-        if show_error:
-            explanation = score_details.get("explanation", "")
-            if explanation:
-                entry += f"**Error Analysis:**\n{explanation[:500]}...\n\n"
-
-            # Extract error messages from raw response
-            raw_response = result.get("raw_response", "")
-            if raw_response and isinstance(raw_response, str):
-                error_matches = re.findall(r'"message":\s*"([^"]+)"', raw_response)
-                if error_matches:
-                    entry += f"**Error Message:** {error_matches[0]}\n\n"
-
-        # Add latency if available
-        latency = result.get("latency_ms")
-        if latency:
-            entry += f"**Latency:** {latency}ms\n\n"
-
-        entry += "</details>\n\n"
-
-        return entry
 
 
 def main():

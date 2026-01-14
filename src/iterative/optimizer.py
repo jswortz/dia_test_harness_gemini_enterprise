@@ -1105,9 +1105,14 @@ class IterativeOptimizer:
                 agent_id=self.agent_id
             )
 
+            # Generate assist token registry JSON
+            print("\nGenerating assist token registry...")
+            self._generate_assist_token_registry()
+
             print(f"\n{'='*80}")
             print(f"📊 Full optimization report: {report_path}")
             print(f"📈 Charts directory: {charts_dir}")
+            print(f"🔍 Assist token registry: {self.run_dir / 'assist_token_registry.json'}")
             print(f"{'='*80}\n")
 
         except ImportError as e:
@@ -1117,3 +1122,101 @@ class IterativeOptimizer:
         except Exception as e:
             print(f"Warning: Error generating artifacts: {e}")
             print("Continuing without visualization...")
+
+    def _generate_assist_token_registry(self):
+        """Generate assist token registry JSON artifact."""
+        import re
+
+        def extract_assist_token(raw_response):
+            """Extract assist token from raw API response."""
+            if not raw_response:
+                return None
+
+            # Handle string representation
+            if isinstance(raw_response, str):
+                if 'assistToken' in raw_response:
+                    match = re.search(r"'assistToken':\s*'([^']+)'", raw_response)
+                    if match:
+                        return match.group(1)
+
+            # Handle list of response chunks
+            if isinstance(raw_response, list):
+                for chunk in raw_response:
+                    if isinstance(chunk, dict) and 'assistToken' in chunk:
+                        token = chunk['assistToken']
+                        if token and token.strip():
+                            return token
+
+            return None
+
+        # Load all evaluation results
+        eval_files = sorted(self.run_dir.glob('eval_train_*.jsonl*'))
+        all_results = []
+
+        for eval_file in eval_files:
+            try:
+                with open(eval_file, 'r') as f:
+                    for line in f:
+                        if line.strip():
+                            all_results.append(json.loads(line))
+            except Exception as e:
+                print(f"  Warning: Could not read {eval_file.name}: {e}")
+
+        # Categorize results
+        categories = {'success': [], 'low_score': [], 'no_sql': []}
+
+        for result in all_results:
+            generated_sql = result.get('generated_sql', '').strip()
+            score = result.get('score_details', {}).get('total_score', 0)
+            error = result.get('error', '')
+
+            # Build categorized entry
+            entry = {
+                'question_id': result.get('question_id'),
+                'question': result.get('question'),
+                'repeat_num': result.get('repeat_num'),
+                'score': score,
+                'assist_token': extract_assist_token(result.get('raw_response')),
+                'generated_sql': generated_sql if generated_sql else None,
+                'error': error if error else None
+            }
+
+            # Add category scores and explanation for queries with SQL
+            if generated_sql:
+                entry['category_scores'] = result.get('score_details', {}).get('category_scores', {})
+                entry['verdict'] = result.get('score_details', {}).get('verdict')
+
+                if score < 60:
+                    entry['explanation'] = result.get('explanation')
+
+            # Categorize
+            if not generated_sql:
+                categories['no_sql'].append(entry)
+            elif score < 60:
+                categories['low_score'].append(entry)
+            else:
+                categories['success'].append(entry)
+
+        # Build JSON structure
+        registry = {
+            'run_id': self.run_dir.name.replace('run_', ''),
+            'agent_id': self.agent_id,
+            'agent_name': self.tracker.history.get('agent_name', 'unknown'),
+            'total_queries': len(all_results),
+            'summary': {
+                'success_count': len(categories['success']),
+                'low_score_count': len(categories['low_score']),
+                'no_sql_count': len(categories['no_sql'])
+            },
+            'categories': categories
+        }
+
+        # Write to file
+        output_file = self.run_dir / 'assist_token_registry.json'
+        with open(output_file, 'w') as f:
+            json.dump(registry, f, indent=2)
+
+        print(f"  ✅ Assist token registry generated")
+        print(f"     SUCCESS: {registry['summary']['success_count']}")
+        print(f"     LOW_SCORE: {registry['summary']['low_score_count']}")
+        print(f"     NO_SQL: {registry['summary']['no_sql_count']}")

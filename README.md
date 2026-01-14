@@ -139,12 +139,14 @@ Now you can optimize the agent as many times as you want:
 ```bash
 # Basic optimization (interactive)
 dia-harness optimize \
+  --agent-id <your-agent-id> \
   --config-file configs/baseline_config.json \
   --golden-set data/golden_set.json \
   --max-iterations 10
 
 # Fully automated (no manual approval)
 dia-harness optimize \
+  --agent-id <your-agent-id> \
   --config-file configs/baseline_config.json \
   --golden-set data/golden_set.json \
   --max-iterations 10 \
@@ -152,6 +154,7 @@ dia-harness optimize \
 
 # With test dataset (detect overfitting)
 dia-harness optimize \
+  --agent-id <your-agent-id> \
   --config-file configs/baseline_config.json \
   --golden-set data/golden_set.json \
   --test-set data/test_set.json \
@@ -496,9 +499,15 @@ Run iterative optimization on an existing deployed agent.
 
 ```bash
 dia-harness optimize \
+  --agent-id <your-agent-id> \
   --config-file configs/baseline_config.json \
   --golden-set data/golden_set.json \
   [options]
+
+# Resume/Ad-hoc optimization (no config file needed)
+dia-harness optimize \
+  --agent-id <your-agent-id> \
+  --golden-set data/golden_set.json
 ```
 
 **When to use**: Anytime after deploying and authorizing an agent. Run as many times as needed.
@@ -665,6 +674,7 @@ dia_test_harness_gemini_enterprise/
 ```bash
 # Run each test 5 times for high confidence
 dia-harness optimize \
+  --agent-id <your-agent-id> \
   --config-file configs/baseline_config.json \
   --golden-set data/golden_set.json \
   --num-repeats 5
@@ -674,6 +684,7 @@ dia-harness optimize \
 ```bash
 # Evaluate on both train and test sets
 dia-harness optimize \
+  --agent-id <your-agent-id> \
   --config-file configs/baseline_config.json \
   --golden-set data/golden_set.json \
   --test-set data/test_set.json
@@ -683,6 +694,7 @@ dia-harness optimize \
 ```bash
 # No manual intervention required
 dia-harness optimize \
+  --agent-id <your-agent-id> \
   --config-file configs/baseline_config.json \
   --golden-set data/golden_set.json \
   --max-iterations 20 \

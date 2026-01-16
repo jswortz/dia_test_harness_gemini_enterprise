@@ -803,16 +803,27 @@ class IterativeOptimizer:
         print("CONFIGURATION ANALYSIS & IMPROVEMENT")
         print(f"{'='*80}\n")
 
-        # Step 1: Extract previous iteration metrics for trajectory analysis
-        # This enables regression detection and context-aware improvements
-        previous_metrics = None
-        if len(self.tracker.history.get("iterations", [])) > 0:
+        # Step 1: Extract trajectory history for OPRO-aligned optimization
+        # Get top N best-performing prompts sorted ascending (worst to best)
+        # This enables pattern recognition across the full optimization history
+        trajectory_history = None
+        previous_metrics = None  # Keep for backward compatibility
+
+        num_iterations = len(self.tracker.history.get("iterations", []))
+        if num_iterations > 0:
+            # OPRO approach: Get top N prompts sorted by accuracy (ascending)
+            # Start with top-10 to avoid context overflow, can increase to 20 later
+            trajectory_history = self.tracker.get_top_n_by_accuracy(n=min(10, num_iterations))
+            if trajectory_history:
+                print(f"📊 OPRO Trajectory Context: Using top {len(trajectory_history)} prompts from history")
+                print(f"   Accuracy range: {trajectory_history[0]['accuracy']:.2f}% → {trajectory_history[-1]['accuracy']:.2f}%")
+
+            # Also extract previous iteration metrics for legacy code paths
             last_iteration = self.tracker.get_last_iteration()
             if last_iteration:
                 eval_data = last_iteration.get("evaluation", {})
                 if "train" in eval_data:
                     previous_metrics = eval_data["train"]
-                    print(f"📊 Trajectory Context: Using previous iteration metrics for comparison")
 
         # Step 2: Fetch current config from deployed agent via API
         # This ensures we're analyzing the actual deployed config, not just in-memory state
@@ -908,7 +919,8 @@ class IterativeOptimizer:
                 failures=failures,
                 current_prompt=self.current_prompt,
                 successes=successes,
-                previous_metrics=previous_metrics  # NEW: Pass trajectory context
+                previous_metrics=previous_metrics,  # Legacy: single iteration context
+                trajectory_history=trajectory_history  # OPRO: full trajectory context
             )
             improved_prompt, prompt_change_desc = self.improver.present_suggestions_to_user(
                 current_prompt=self.current_prompt,

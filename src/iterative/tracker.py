@@ -253,6 +253,29 @@ class TrajectoryTracker:
             }
         }
 
+    def _extract_accuracy(self, metrics: Dict) -> float:
+        """
+        Extract accuracy value whether it's a float or dict (from repeats).
+
+        Prefers question_level_accuracy if available (treats API errors as missing data).
+        Falls back to repeat-level mean accuracy otherwise.
+
+        Args:
+            metrics: Metrics dict with accuracy as float or dict
+
+        Returns:
+            float: Accuracy as a percentage (0-100)
+        """
+        # Prefer question-level accuracy (errors treated as missing data)
+        if "question_level_accuracy" in metrics:
+            return metrics["question_level_accuracy"]
+
+        # Fallback to standard accuracy
+        acc = metrics.get("accuracy", 0.0)
+        if isinstance(acc, dict):
+            return acc.get("mean", 0.0)
+        return acc
+
     def get_trajectory_summary(self) -> Dict[str, Any]:
         """
         Get a summary of the entire trajectory.
@@ -268,18 +291,11 @@ class TrajectoryTracker:
         if not self.history["iterations"]:
             return {"error": "No iterations recorded"}
 
-        def _extract_accuracy(metrics: Dict) -> float:
-            """Extract accuracy value whether it's a float or dict (from repeats)."""
-            acc = metrics.get("accuracy", 0.0)
-            if isinstance(acc, dict):
-                return acc.get("mean", 0.0)
-            return acc
-
         iterations = self.history["iterations"]
-        accuracy_progression = [_extract_accuracy(it["metrics"]) for it in iterations]
+        accuracy_progression = [self._extract_accuracy(it["metrics"]) for it in iterations]
 
-        best_iter = max(iterations, key=lambda x: _extract_accuracy(x["metrics"]))
-        worst_iter = min(iterations, key=lambda x: _extract_accuracy(x["metrics"]))
+        best_iter = max(iterations, key=lambda x: self._extract_accuracy(x["metrics"]))
+        worst_iter = min(iterations, key=lambda x: self._extract_accuracy(x["metrics"]))
 
         overall_improvement = accuracy_progression[-1] - accuracy_progression[0]
 
@@ -287,15 +303,64 @@ class TrajectoryTracker:
             "total_iterations": len(iterations),
             "best_iteration": {
                 "iteration": best_iter["iteration"],
-                "accuracy": _extract_accuracy(best_iter["metrics"])
+                "accuracy": self._extract_accuracy(best_iter["metrics"])
             },
             "worst_iteration": {
                 "iteration": worst_iter["iteration"],
-                "accuracy": _extract_accuracy(worst_iter["metrics"])
+                "accuracy": self._extract_accuracy(worst_iter["metrics"])
             },
             "accuracy_progression": accuracy_progression,
             "overall_improvement": round(overall_improvement, 2)
         }
+
+    def get_top_n_by_accuracy(self, n: int = 20, max_prompt_length: int = 500) -> List[Dict[str, Any]]:
+        """
+        Get top N iterations by accuracy, sorted ascending (worst to best).
+
+        This aligns with OPRO research: showing best prompts at the end leverages
+        recency bias - LLMs pay more attention to the end of context.
+
+        Args:
+            n: Number of top iterations to return (default: 20 per OPRO)
+            max_prompt_length: Maximum chars per prompt for context efficiency (default: 500)
+
+        Returns:
+            List of dicts sorted by accuracy (ascending), each containing:
+                - prompt (str): Truncated nl2sql_prompt
+                - accuracy (float): Accuracy percentage
+                - iteration (int): Iteration number
+                - prompt_preview (str): First 100 chars for quick scanning
+        """
+        if not self.history["iterations"]:
+            return []
+
+        iterations = self.history["iterations"]
+
+        # Extract (prompt, accuracy, iteration) tuples
+        trajectory_pairs = []
+        for it in iterations:
+            prompt = it.get("configuration", {}).get("nl2sql_prompt", "")
+            accuracy = self._extract_accuracy(it["metrics"])
+            iteration_num = it.get("iteration", 0)
+
+            # Truncate prompt to manage context length
+            truncated_prompt = prompt[:max_prompt_length] + ("..." if len(prompt) > max_prompt_length else "")
+
+            trajectory_pairs.append({
+                "prompt": truncated_prompt,
+                "full_prompt": prompt,  # Keep full for reference
+                "accuracy": accuracy,
+                "iteration": iteration_num,
+                "prompt_preview": prompt[:100] + ("..." if len(prompt) > 100 else "")
+            })
+
+        # Sort by accuracy (ascending: worst to best)
+        sorted_trajectory = sorted(trajectory_pairs, key=lambda x: x["accuracy"])
+
+        # Take top N (best scoring)
+        top_n = sorted_trajectory[-n:] if len(sorted_trajectory) > n else sorted_trajectory
+
+        return top_n
 
     def save(self, path: str = None):
         """

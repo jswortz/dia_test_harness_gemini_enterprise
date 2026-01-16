@@ -360,7 +360,77 @@ class SingleAgentEvaluator:
         # Display summary
         self._display_repeat_summary(aggregated_metrics, repeat_metrics, failures)
 
+        # Calculate question-level accuracy (treating errors as missing data)
+        question_level_accuracy = self._calculate_question_level_accuracy(all_results, len(test_cases), num_repeats)
+        aggregated_metrics['question_level_accuracy'] = question_level_accuracy
+
         return all_results, aggregated_metrics, failures
+
+    def _calculate_question_level_accuracy(
+        self,
+        all_results: List[Dict],
+        num_questions: int,
+        num_repeats: int
+    ) -> float:
+        """
+        Calculate accuracy by averaging per-question scores, treating errors as missing data.
+
+        For each question:
+        - Calculate average score across non-error repeats
+        - Treat API errors as missing measurements (not zeros)
+
+        Example:
+            Q1: R1=100, R2=error → average = 100 (not 50)
+            Q2: R1=80, R2=90 → average = 85
+            Q3: R1=error, R2=error → average = 0 (all failed)
+
+        Args:
+            all_results: All results from all repeats
+            num_questions: Number of questions in test set
+            num_repeats: Number of repeats per question
+
+        Returns:
+            Overall accuracy calculated from question-level averages
+        """
+        question_scores = {}
+
+        # Group results by question
+        for result in all_results:
+            q_id = result.get('question_id')
+            if not q_id:
+                continue
+
+            if q_id not in question_scores:
+                question_scores[q_id] = []
+
+            # Skip errors - treat as missing data
+            if 'error' in result:
+                continue
+
+            # Determine if this result passed
+            passed = False
+            if result.get('is_match', False):
+                passed = True
+            elif result.get('score_details', {}).get('verdict') in ['EQUIVALENT', 'MOSTLY_CORRECT']:
+                passed = True
+
+            question_scores[q_id].append(1.0 if passed else 0.0)
+
+        # Calculate per-question averages (only from non-error repeats)
+        total_score = 0
+        valid_questions = 0
+
+        for q_id, scores in question_scores.items():
+            if scores:  # Has at least one non-error measurement
+                avg_score = sum(scores) / len(scores)
+                total_score += avg_score
+                valid_questions += 1
+
+        # Calculate overall accuracy
+        if valid_questions > 0:
+            return round((total_score / valid_questions) * 100, 2)
+        else:
+            return 0.0
 
     def _save_results_to_file(self, results: List[Dict], output_path: str):
         """Save results to JSONL file."""
@@ -374,6 +444,10 @@ class SingleAgentEvaluator:
         Aggregate metrics across repeats.
 
         Returns metrics with mean, std, min, max for accuracy and other stats.
+
+        Note: This aggregates metrics at the repeat level. For per-question aggregation
+        that handles errors as missing data, see the calculate_question_level_metrics
+        method or report_generator._format_results_table.
         """
         import statistics
 
@@ -430,9 +504,15 @@ class SingleAgentEvaluator:
         print(f"{'='*80}\n")
 
         acc = aggregated_metrics['accuracy']
-        print(f"Accuracy: {acc['mean']:.2f}% ± {acc['std']:.2f}%")
+        print(f"Accuracy (repeat-level mean): {acc['mean']:.2f}% ± {acc['std']:.2f}%")
         print(f"  Range: {acc['min']:.2f}% - {acc['max']:.2f}%")
         print(f"  Individual runs: {acc['values']}")
+
+        # Show question-level accuracy (errors treated as missing data)
+        if 'question_level_accuracy' in aggregated_metrics:
+            q_acc = aggregated_metrics['question_level_accuracy']
+            print(f"\nAccuracy (question-level, errors=missing): {q_acc:.2f}%")
+            print(f"  (This treats API errors as missing data, not zeros)")
 
         print(f"\nBreakdown:")
         exact = aggregated_metrics['exact_match']

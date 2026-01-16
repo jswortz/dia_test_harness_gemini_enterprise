@@ -106,8 +106,8 @@ class AgentClient:
 
     @retry(
         retry=retry_if_exception_type(RetryableAPIError),
-        stop=stop_after_attempt(10),  # Increased from 5 to 10 for better reliability
-        wait=wait_exponential(multiplier=2, min=4, max=120),  # Increased max from 60s to 120s
+        stop=stop_after_attempt(5),  # Reduced from 10 to 5 to avoid long timeouts (outer loop also retries)
+        wait=wait_exponential(multiplier=2, min=4, max=60),  # Reduced max wait to 60s
         before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
         reraise=True
     )
@@ -150,7 +150,9 @@ class AgentClient:
         }
 
         logging.info(f"Querying agent {self.agent_id} with: {text}")
-        response = self.session.post(url, headers=headers, json=payload)
+        # CRITICAL RESPONSE: Added timeout to prevent indefinite hangs
+        # Connect timeout: 10s, Read timeout: 180s (generous for LLM generation)
+        response = self.session.post(url, headers=headers, json=payload, timeout=(10, 180))
 
         if not response.ok:
             # Check for 403 authorization errors (DO NOT RETRY)

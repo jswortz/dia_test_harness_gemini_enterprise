@@ -205,6 +205,46 @@ The deploy command will also display detailed authorization instructions.
 
 **Note**: Authorization persists forever. You only do this once per agent.
 
+#### Alternative: Authorization with Workload Identity Federation (WIF)
+
+For non-interactive sign-in (e.g., scripts, headless environments), use **Workload Identity Federation (WIF)**. This method uses a credential configuration file that points to a source for the external token (e.g., a file, a URL, or an executable).
+
+**1. Obtain the assertion token**
+
+Obtain the assertion token from your IdP (e.g., SAML assertion, OIDC ID token). The method for this depends on your IdP. Store the token securely (e.g., in a file).
+
+**2. Generate the ADC configuration file**
+
+**Example for SAML:**
+```bash
+gcloud iam workforce-pools create-cred-config \
+    locations/global/workforcePools/WORKFORCE_POOL_ID/providers/WORKFORCE_PROVIDER_ID \
+    --subject-token-type=urn:ietf:params:oauth:token-type:saml2 \
+    --credential-source-file=PATH_TO_YOUR_SAML_ASSERTION \
+    --workforce-pool-user-project=YOUR_QUOTA_PROJECT_ID \
+    --output-file=adc-workforce-config.json
+```
+
+**Example for OIDC:**
+```bash
+gcloud iam workforce-pools create-cred-config \
+    locations/global/workforcePools/WORKFORCE_POOL_ID/providers/WORKFORCE_PROVIDER_ID \
+    --subject-token-type=urn:ietf:params:oauth:token-type:id_token \
+    --credential-source-file=PATH_TO_YOUR_OIDC_TOKEN \
+    --workforce-pool-user-project=YOUR_QUOTA_PROJECT_ID \
+    --output-file=adc-workforce-config.json
+```
+
+*Replace placeholders with your actual values. `YOUR_QUOTA_PROJECT_ID` is a project used for billing and quota for API calls made with these credentials.*
+
+**3. Make ADC Use the Configuration File**
+
+Set the `GOOGLE_APPLICATION_CREDENTIALS` environment variable to the path of the `adc-workforce-config.json` file you generated:
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/adc-workforce-config.json
+```
+
 ### Step 3: Run Optimization
 
 Now you can optimize the agent as many times as you want:

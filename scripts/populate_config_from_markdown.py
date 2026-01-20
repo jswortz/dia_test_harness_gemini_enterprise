@@ -8,7 +8,9 @@ Reads:
 - configs/tool_description.md
 
 Updates:
-- configs/baseline_config.json (nl2sql_prompt, schema_description, tool_description)
+- configs/baseline_config.json (nl2sql_prompt, schema_description, tool_description, description)
+
+Note: tool_description.md is used to populate both 'tool_description' and 'description' fields.
 """
 
 import json
@@ -96,9 +98,11 @@ def main():
     config['nl2sql_prompt'] = nl2sql_prompt
     config['schema_description'] = schema_description
     config['tool_description'] = tool_description
+    config['description'] = tool_description
     print(f"✓ Updated nl2sql_prompt ({len(nl2sql_prompt)} chars)")
     print(f"✓ Updated schema_description ({len(schema_description)} chars)")
     print(f"✓ Updated tool_description ({len(tool_description)} chars)")
+    print(f"✓ Updated description ({len(tool_description)} chars) [from tool_description.md]")
     print()
     
     # Save updated config

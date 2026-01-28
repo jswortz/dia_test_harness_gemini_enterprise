@@ -16,10 +16,13 @@ WHAT THIS SCRIPT DOES:
        - Thoughts (internal reasoning marked with thought=True)
        - Response (natural language answer)
        - Generated SQL (from code blocks or bare SELECT statements)
-    4. Categorizes errors and tracks performance metrics
-    5. Saves results INCREMENTALLY after each question (survives interruptions!)
-    6. Auto-stops after 3 consecutive timeouts (circuit breaker)
-    7. Provides detailed summary statistics
+    4. CONDITIONAL SQL FOLLOW-UP: If SQL not found in initial response, sends a 
+       follow-up query "what was the sql query used for the previous answer?"
+       to the same session (saves API calls when SQL is already available)
+    5. Categorizes errors and tracks performance metrics (including sql_source)
+    6. Saves results INCREMENTALLY after each question (survives interruptions!)
+    7. Auto-stops after 3 consecutive timeouts (circuit breaker)
+    8. Provides detailed summary statistics
 
 AUTHENTICATION:
     Uses Google Cloud Application Default Credentials (ADC):
@@ -80,17 +83,21 @@ OUTPUT:
     - Excel file: agent_test_results_YYYYMMDD_HHMMSS.xlsx (main output)
     - JSON file: agent_test_results_YYYYMMDD_HHMMSS.json (raw data backup)
     - Retest files: original_name_retest_N.{json,xlsx} (when using --retest-from)
-    - Contains: questions, responses, SQL, metrics, error categorization in columns
+    - Contains: questions, responses, SQL, SQL Source (initial/follow_up/none), 
+      metrics, error categorization in columns
     - Console: Detailed progress and summary statistics
 
 RETEST FUNCTIONALITY:
     - Use --retest-from to retest only failures from a previous run
     - Automatically retests: timeout, api_error, authorization_required, empty_response
-    - Skips: no_sql_generated (agent responded), success (SQL generated)
+    - Skips by default: no_sql_generated (agent responded), success (SQL generated)
+    - Use --include-no-sql to ALSO retry questions where no SQL was generated
+      (useful since follow-up query may now extract SQL that was missed before)
     - Generates new files with _retest_N suffix (preserves original, increments cleanly)
     - Use --recurse N to automatically run N retest iterations
     - Example single retest: python scripts/test_agent_from_excel.py --retest-from results.json
     - Example recursive: python scripts/test_agent_from_excel.py --retest-from results.json --recurse 3
+    - Example with no-SQL retry: python scripts/test_agent_from_excel.py --retest-from results.json --include-no-sql
     - Naming: base_retest_1.json → base_retest_2.json → base_retest_3.json (clean increment)
 
 ERROR CATEGORIES:
@@ -103,11 +110,13 @@ ERROR CATEGORIES:
 
 PERFORMANCE METRICS TRACKED:
     - total_time: End-to-end processing time
-    - api_response_time: Time for API to respond
+    - api_response_time: Time for API to respond (initial + follow-up)
+    - followup_api_time: Time for follow-up SQL query specifically
     - extraction_time: Time to parse response
     - thought_length: Character count of thoughts
     - response_length: Character count of response
     - sql_length: Character count of SQL
+    - sql_source: Where SQL was extracted from (initial/follow_up/none)
 
 SQL EXTRACTION PATTERNS (in priority order):
     1. Markdown SQL blocks: ```sql ... ```
@@ -125,6 +134,8 @@ IMPORTANT NOTES:
     - Each API caller must complete OAuth separately
     - State parameter in OAuth is binary data (normal, not corrupted)
     - Uses same AgentClient and extraction logic as the optimizer
+    - API calls use agentsSpec to route queries to the specific agent_id
+      (ensures queries go to the Data Insights Agent, not default assistant)
 
 RELATED SCRIPTS:
     - scripts/deployment/authorize_agent.py - Get OAuth authorization URL
@@ -440,8 +451,8 @@ def read_questions_from_excel(excel_path: str) -> List[str]:
     # Read Excel file (will read first sheet by default)
     df = pd.read_excel(excel_path)
     
-    # Get first column, skip header (row 0), and remove any NaN values
-    questions = df.iloc[1:, 0].dropna().tolist()
+    # Get first column (pandas already handled the header row), and remove any NaN values
+    questions = df.iloc[:, 0].dropna().tolist()
     
     # Convert to strings and strip whitespace
     questions = [str(q).strip() for q in questions if str(q).strip()]
@@ -607,10 +618,14 @@ def _run_single_question(
     total_questions: int,
     current_session_id: Optional[str] = None,
     use_same_session: bool = False,
-    timeout_seconds: int = 180
+    timeout_seconds: int = 300
 ) -> Dict[str, Any]:
     """
     Run a single question query with isolated session (for parallel execution).
+    
+    Includes automatic follow-up query to extract SQL if not found in initial response.
+    Uses the same session to ask "what was the sql query used for the previous answer?"
+    This matches the behavior of the optimizer's TestRunner.run_single_test().
     
     Args:
         client: AgentClient instance
@@ -619,7 +634,7 @@ def _run_single_question(
         total_questions: Total number of questions
         current_session_id: Optional session ID for conversational mode
         use_same_session: Whether to use existing session
-        timeout_seconds: Timeout in seconds (default: 180)
+        timeout_seconds: Timeout in seconds (default: 300)
         
     Returns:
         Dict with test result including response, metrics, and error info
@@ -647,7 +662,7 @@ def _run_single_question(
     start_time = time.time()
     
     try:
-        # Query the agent
+        # Query the agent (initial question)
         api_start = time.time()
         if use_same_session and current_session_id:
             streaming_messages = client.query_agent(
@@ -660,12 +675,59 @@ def _run_single_question(
                 text=question,
                 timeout=timeout_seconds
             )
-        api_end = time.time()
+        api_end_initial = time.time()
         
-        # Extract response data
+        # Extract response data from initial query
         extraction_start = time.time()
         response_data = extract_agent_response(streaming_messages)
+        
+        # FOLLOW-UP QUERY: Conditionally ask for SQL if not found in initial response
+        # This saves API calls when SQL is already available in the first response
+        session_id = response_data.get("session_id")
+        followup_api_time = 0
+        
+        # Only send follow-up if: 1) we have a session_id, AND 2) no SQL was found in initial response
+        if session_id and not response_data.get("generated_sql"):
+            logger.debug(f"[{question_idx}/{total_questions}] No SQL in initial response, sending follow-up query...")
+            
+            followup_start = time.time()
+            try:
+                followup_messages = client.query_agent(
+                    text="what was the sql query used for the previous answer?",
+                    session_id=session_id,
+                    timeout=timeout_seconds
+                )
+                followup_end = time.time()
+                followup_api_time = followup_end - followup_start
+                
+                followup_data = extract_agent_response(followup_messages)
+                
+                # Update generated_sql if found in follow-up
+                if followup_data.get("generated_sql"):
+                    response_data["generated_sql"] = followup_data["generated_sql"]
+                    response_data["sql_source"] = "follow_up"
+                    logger.debug(f"[{question_idx}/{total_questions}] SQL extracted from follow-up query")
+                else:
+                    response_data["sql_source"] = "none"
+                        
+            except Exception as followup_error:
+                # Log but don't fail - we still have the initial response
+                logger.warning(f"[{question_idx}/{total_questions}] Follow-up query failed: {followup_error}")
+                response_data["sql_source"] = "none"
+                response_data["followup_error"] = str(followup_error)
+        else:
+            # SQL was found in initial response, or no session_id available
+            if response_data.get("generated_sql"):
+                response_data["sql_source"] = "initial"
+            else:
+                response_data["sql_source"] = "none"
+                if not session_id:
+                    logger.debug(f"[{question_idx}/{total_questions}] No session_id, cannot send follow-up")
+        
         extraction_end = time.time()
+        
+        # Calculate total API time (initial + follow-up)
+        api_end = api_end_initial + followup_api_time
         
         # Calculate performance metrics
         metrics = calculate_performance_metrics(
@@ -673,6 +735,9 @@ def _run_single_question(
             extraction_start, extraction_end,
             response_data
         )
+        # Add follow-up specific metrics
+        metrics["followup_api_time"] = round(followup_api_time, 3)
+        metrics["sql_source"] = response_data.get("sql_source", "unknown")
         
         result["status"] = "success"
         result["response"] = response_data
@@ -683,8 +748,9 @@ def _run_single_question(
         result["error_category"] = categorize_error(result)
         
         # Log response summary
+        sql_source = response_data.get("sql_source", "unknown")
         logger.info(f"[{question_idx}/{total_questions}] ✓ Response: {len(response_data['response'])} chars, "
-                   f"SQL: {'Yes' if response_data['generated_sql'] else 'No'}, "
+                   f"SQL: {'Yes' if response_data['generated_sql'] else 'No'} ({sql_source}), "
                    f"Time: {metrics['api_response_time']:.2f}s")
         
     except requests.Timeout as e:
@@ -811,7 +877,7 @@ def test_agent_with_questions(
     logger.info(f"  Parallel Mode: {'DISABLED (same session)' if use_same_session else 'ENABLED'}")
     
     # PARALLEL vs SEQUENTIAL mode
-    TIMEOUT_SECONDS = 180  # 3 minutes per question
+    TIMEOUT_SECONDS = 300  # 3 minutes per question
     
     if use_same_session:
         # SEQUENTIAL MODE: Required for conversational context
@@ -854,7 +920,7 @@ def save_results_to_excel(results: List[Dict[str, Any]], excel_file: str):
     
     Excel Structure:
         - One row per question
-        - Columns: Question, Timestamp, Status, Error Category, Generated SQL, Response, Total Time
+        - Columns: Question, Timestamp, Status, Error Category, SQL Source, Generated SQL, Response, Total Time
     
     Args:
         results: List of test results
@@ -870,9 +936,15 @@ def save_results_to_excel(results: List[Dict[str, Any]], excel_file: str):
         # Handle None response (for errors/timeouts)
         response_text = ""
         generated_sql = ""
+        sql_source = ""
         if response and isinstance(response, dict):
             response_text = response.get("response", "")
             generated_sql = response.get("generated_sql", "")
+            sql_source = response.get("sql_source", "")
+        
+        # Also check metrics for sql_source (backup location)
+        if not sql_source and metrics:
+            sql_source = metrics.get("sql_source", "")
         
         # Clean up error category: null instead of "unknown" for successful SQL generation
         error_category = result.get("error_category")
@@ -884,9 +956,11 @@ def save_results_to_excel(results: List[Dict[str, Any]], excel_file: str):
             "Timestamp": result.get("timestamp"),
             "Status": result.get("status"),
             "Error Category": error_category,
+            "SQL Source": sql_source,  # NEW: Track where SQL came from (initial/follow_up/none)
             "Generated SQL": generated_sql,
             "Response (Natural Language)": response_text,
             "Total Time (s)": metrics.get("total_time", 0) if metrics else 0,
+            "Follow-up Time (s)": metrics.get("followup_api_time", 0) if metrics else 0,
         }
         
         rows.append(row)
@@ -908,9 +982,11 @@ def save_results_to_excel(results: List[Dict[str, Any]], excel_file: str):
             'B': 20,  # Timestamp
             'C': 12,  # Status
             'D': 25,  # Error Category
-            'E': 80,  # Generated SQL
-            'F': 80,  # Response
-            'G': 15,  # Total Time
+            'E': 15,  # SQL Source
+            'F': 80,  # Generated SQL
+            'G': 80,  # Response
+            'H': 15,  # Total Time
+            'I': 18,  # Follow-up Time
         }
         
         for col, width in column_widths.items():
@@ -920,7 +996,7 @@ def save_results_to_excel(results: List[Dict[str, Any]], excel_file: str):
         from openpyxl.styles import Alignment
         for row in worksheet.iter_rows(min_row=2, max_row=len(rows)+1):
             for cell in row:
-                if cell.column_letter in ['A', 'E', 'F']:  # Question, Generated SQL, Response
+                if cell.column_letter in ['A', 'F', 'G']:  # Question, Generated SQL, Response
                     cell.alignment = Alignment(wrap_text=True, vertical='top')
 
 
@@ -931,7 +1007,7 @@ def print_summary(results: List[Dict[str, Any]], use_same_session: bool, excel_f
     Summary Includes:
         - Total questions tested
         - Success/error counts
-        - SQL extraction rate
+        - SQL extraction rate and source breakdown
         - Error categorization breakdown
         - Performance statistics (avg, min, max)
         - Session mode
@@ -951,18 +1027,29 @@ def print_summary(results: List[Dict[str, Any]], use_same_session: bool, excel_f
         if r["status"] == "success" and r["response"] and r["response"]["generated_sql"]
     )
     
+    # SQL source breakdown
+    sql_sources = {"initial": 0, "follow_up": 0, "none": 0}
+    for r in results:
+        if r["status"] == "success" and r.get("response"):
+            source = r["response"].get("sql_source", "unknown")
+            if source in sql_sources:
+                sql_sources[source] += 1
+    
     # Error categorization breakdown
     error_categories = {}
     for r in results:
-        cat = r.get("error_category", "unknown")
-        error_categories[cat] = error_categories.get(cat, 0) + 1
+        cat = r.get("error_category")
+        if cat:  # Skip None (Success)
+            error_categories[cat] = error_categories.get(cat, 0) + 1
     
     # Performance statistics
     api_times = [r["metrics"]["api_response_time"] for r in results if r.get("metrics")]
     total_times = [r["metrics"]["total_time"] for r in results if r.get("metrics")]
+    followup_times = [r["metrics"].get("followup_api_time", 0) for r in results if r.get("metrics")]
     
     avg_api_time = sum(api_times) / len(api_times) if api_times else 0
     avg_total_time = sum(total_times) / len(total_times) if total_times else 0
+    avg_followup_time = sum(followup_times) / len(followup_times) if followup_times else 0
     min_api_time = min(api_times) if api_times else 0
     max_api_time = max(api_times) if api_times else 0
     
@@ -974,12 +1061,18 @@ def print_summary(results: List[Dict[str, Any]], use_same_session: bool, excel_f
     logger.info(f"Errors: {error_count}")
     logger.info(f"SQL extracted: {sql_found_count}/{success_count}")
     
+    logger.info(f"\nSQL Source Breakdown:")
+    logger.info(f"  From initial response: {sql_sources['initial']}")
+    logger.info(f"  From follow-up query: {sql_sources['follow_up']}")
+    logger.info(f"  No SQL found: {sql_sources['none']}")
+    
     logger.info(f"\nError Categorization:")
     for category, count in sorted(error_categories.items()):
         logger.info(f"  {category}: {count}")
     
     logger.info(f"\nPerformance Metrics:")
-    logger.info(f"  Avg API response time: {avg_api_time:.2f}s")
+    logger.info(f"  Avg API response time: {avg_api_time:.2f}s (includes follow-up)")
+    logger.info(f"  Avg follow-up time: {avg_followup_time:.2f}s")
     logger.info(f"  Avg total time: {avg_total_time:.2f}s")
     logger.info(f"  Min/Max API time: {min_api_time:.2f}s / {max_api_time:.2f}s")
     
@@ -1010,7 +1103,8 @@ def load_previous_results(json_file: str) -> List[Dict[str, Any]]:
 
 def identify_retest_questions(
     previous_results: List[Dict[str, Any]],
-    exclude_categories: List[str] = None
+    exclude_categories: List[str] = None,
+    include_no_sql: bool = False
 ) -> List[str]:
     """
     Identify questions that need retesting based on error categories.
@@ -1019,22 +1113,32 @@ def identify_retest_questions(
     - None (successful SQL generation)
     - "no_sql_generated" (agent responded but no SQL - not a failure)
     
-    Retests:
+    Retests by default:
     - "timeout"
     - "api_error"
     - "authorization_required"
     - "empty_response"
     - "unknown" (unexpected errors)
     
+    With include_no_sql=True, also retests:
+    - "no_sql_generated" (agent responded but no SQL was extracted)
+    
     Args:
         previous_results: List of previous test results
         exclude_categories: Categories to exclude from retest (default: [None, "no_sql_generated"])
+        include_no_sql: If True, also retest questions where no SQL was generated
+                       (useful to retry with follow-up query for SQL extraction)
         
     Returns:
         List of questions to retest
     """
     if exclude_categories is None:
-        exclude_categories = [None, "no_sql_generated"]
+        if include_no_sql:
+            # Only exclude successful SQL generation
+            exclude_categories = [None]
+        else:
+            # Default: exclude both success and no_sql_generated
+            exclude_categories = [None, "no_sql_generated"]
     
     retest_questions = []
     for result in previous_results:
@@ -1265,6 +1369,12 @@ def main():
         default=1,
         help="Number of retest iterations to run automatically (default: 1, use with --retest-from)"
     )
+    parser.add_argument(
+        '--include-no-sql',
+        action='store_true',
+        default=False,
+        help="When retesting, also retry questions where no SQL was generated (use with --retest-from)"
+    )
     args = parser.parse_args()
     # Load environment variables
     load_dotenv()
@@ -1301,6 +1411,7 @@ def main():
     max_workers = args.max_workers
     retest_from = args.retest_from
     recurse_count = args.recurse
+    include_no_sql = args.include_no_sql
     
     # RETEST MODE: Load previous results and retest failures
     if retest_from:
@@ -1318,6 +1429,8 @@ def main():
             sys.exit(1)
         
         logger.info(f"Recursive retests: {recurse_count} iteration(s)")
+        if include_no_sql:
+            logger.info(f"Include no-SQL: ENABLED (will also retry questions with no_sql_generated)")
         
         # Initialize agent client once
         logger.info(f"\nInitializing agent client for agent: {agent_id}")
@@ -1351,13 +1464,15 @@ def main():
             logger.info(f"  Total questions: {len(previous_results)}")
             
             # Identify questions to retest
-            retest_questions = identify_retest_questions(previous_results)
+            retest_questions = identify_retest_questions(previous_results, include_no_sql=include_no_sql)
             logger.info(f"  Questions requiring retest: {len(retest_questions)}")
             
             if not retest_questions:
                 logger.info("\n✓ No questions require retesting! All questions either:")
                 logger.info("  - Succeeded (SQL extracted)")
-                logger.info("  - Responded without SQL (no_sql_generated)")
+                if not include_no_sql:
+                    logger.info("  - Responded without SQL (no_sql_generated)")
+                    logger.info("  Tip: Use --include-no-sql to also retry questions with no SQL")
                 if iteration == 1:
                     logger.info(f"\nNo failures to retest!")
                 else:

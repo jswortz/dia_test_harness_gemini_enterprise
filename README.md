@@ -47,17 +47,22 @@ uv pip install -e .
 
 ## Configuration
 
-Create a `.env` file in the root directory:
+Create a `.env` file in the root directory. Copy from `.env.example` and fill in your values:
 
 ```env
-GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_PROJECT=your-data-agent-project-id   # Discovery Engine / agent host project
 DIA_LOCATION=global
 DIA_ENGINE_ID=your-engine-id
-BQ_DATASET_ID=your-dataset-id
+BQ_PROJECT_ID=your-bq-project-id                  # BigQuery project (optional; defaults to GOOGLE_CLOUD_PROJECT)
+BQ_DATASET_ID=your-bq-dataset-id
 DIA_AGENT_ID=  # ⚠️ ADD THIS AFTER DEPLOYING (see Step 1 below)
+OAUTH_CLIENT_ID=...   # Required for deploy
+OAUTH_SECRET=...      # Required for deploy
 JUDGEMENT_MODEL=gemini-3-flash-preview  # Optional: LLM for SQL semantic comparison (default: gemini-2.5-pro)
 USE_FLEXIBLE_SCORING=true  # Enable 100-point SQL rubric (default: true)
 ```
+
+**Two-project pattern:** If your BigQuery dataset lives in a different GCP project than the Discovery Engine app, set `BQ_PROJECT_ID` to the BigQuery project. If unset, the harness uses `GOOGLE_CLOUD_PROJECT` for both.
 
 **Configuration Options:**
 - `DIA_AGENT_ID`: Populated after deployment (see Step 1)
@@ -552,6 +557,8 @@ The agent configuration (`configs/baseline_config.json`) includes:
 }
 ```
 
+**Env → config:** At deploy/optimize time, `bq_project_id` is set from `BQ_PROJECT_ID` when present, otherwise from `GOOGLE_CLOUD_PROJECT`. `bq_dataset_id` comes from `BQ_DATASET_ID`. You can omit these in the JSON and they will be injected from `.env`; or use placeholders as above for documentation.
+
 **Important - Agent Identification:**
 - **Recommended**: Set `DIA_AGENT_ID` in `.env` after deploying (fast, reliable)
 - **Fallback**: If `DIA_AGENT_ID` is not set, the optimizer searches by `display_name`
@@ -620,6 +627,7 @@ dia_test_harness_gemini_enterprise/
 │       ├── evaluator.py           # SQL comparison
 │       └── data_loader.py         # Dataset loading
 ├── scripts/
+│   ├── get_agent_config.py        # Fetch current agent config via API (DIA_AGENT_ID required)
 │   ├── data/                      # Data generation utilities
 │   ├── deployment/                # Deployment scripts
 │   └── utils/                     # Environment checkers

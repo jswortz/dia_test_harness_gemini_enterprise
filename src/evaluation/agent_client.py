@@ -111,12 +111,17 @@ class AgentClient:
         before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
         reraise=True
     )
-    def query_agent(self, text: str, session_id: Optional[str] = None) -> list:
+    def query_agent(self, text: str, session_id: Optional[str] = None, timeout: Optional[float] = None) -> list:
         """
         Queries the agent using streamAssist endpoint with automatic retry on transient failures.
 
         CRITICAL: Uses agentsSpec to route to the Data Insights Agent.
         Without agentsSpec, queries would go to the default assistant, not the DIA.
+
+        Args:
+            text: The question/query text to send to the agent
+            session_id: Optional session ID to use (creates new session if not provided)
+            timeout: Optional timeout in seconds for the request (default: None, no timeout)
 
         Returns:
             List of streaming message chunks as shown in API response structure.
@@ -125,6 +130,7 @@ class AgentClient:
             RetryableAPIError: For 400, 429, 500-504 errors (will be automatically retried)
             AgentAuthorizationError: For 403 authorization errors (not retried)
             requests.HTTPError: For other HTTP errors (not retried)
+            requests.Timeout: If the request times out
         """
         if not session_id:
             # Use '-' for auto-created session
@@ -150,7 +156,7 @@ class AgentClient:
         }
 
         logging.info(f"Querying agent {self.agent_id} with: {text}")
-        response = self.session.post(url, headers=headers, json=payload)
+        response = self.session.post(url, headers=headers, json=payload, timeout=timeout)
 
         if not response.ok:
             # Check for 403 authorization errors (DO NOT RETRY)

@@ -128,15 +128,20 @@ def run_all(config_file, golden_set, output_file, parallel, use_real_api):
         configs = json.load(f)
         
     # Inject Env Vars into Configs if missing
-    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")  # Discovery Engine project
+    bq_project_id = os.getenv("BQ_PROJECT_ID")  # BigQuery project
     dataset_id = os.getenv("BQ_DATASET_ID", "dia_test_dataset")
     
     if use_real_api and not project_id:
          raise click.ClickException("GOOGLE_CLOUD_PROJECT must be set for real API usage.")
 
+    # Use BQ_PROJECT_ID if set, otherwise fall back to GOOGLE_CLOUD_PROJECT
+    if not bq_project_id:
+        bq_project_id = project_id
+
     for c in configs:
-        if "bq_project_id" not in c and project_id:
-            c["bq_project_id"] = project_id
+        if "bq_project_id" not in c and bq_project_id:
+            c["bq_project_id"] = bq_project_id
         if "bq_dataset_id" not in c:
             c["bq_dataset_id"] = dataset_id
         
@@ -222,37 +227,50 @@ def deploy(config_file):
         raise click.ClickException("Invalid config file format")
 
     # Validate required environment variables
-    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")  # Discovery Engine project
     location = os.getenv("DIA_LOCATION", "global")
     engine_id = os.getenv("DIA_ENGINE_ID")
-    dataset_id = os.getenv("BQ_DATASET_ID")
+    bq_project_id = os.getenv("BQ_PROJECT_ID")  # BigQuery project
+    bq_dataset_id = os.getenv("BQ_DATASET_ID")  # BigQuery dataset
 
-    if not all([project_id, location, engine_id, dataset_id]):
+    if not all([project_id, location, engine_id, bq_dataset_id]):
         missing = []
         if not project_id:
             missing.append("GOOGLE_CLOUD_PROJECT")
         if not engine_id:
             missing.append("DIA_ENGINE_ID")
-        if not dataset_id:
+        if not bq_dataset_id:
             missing.append("BQ_DATASET_ID")
         raise click.ClickException(f"Missing required environment variables: {', '.join(missing)}")
 
+    # Populate bq_project_id and bq_dataset_id in config from .env if not present
+    if bq_project_id and "bq_project_id" not in config:
+        config["bq_project_id"] = bq_project_id
+    elif not config.get("bq_project_id") and bq_project_id:
+        config["bq_project_id"] = bq_project_id
+    
+    if bq_dataset_id and "bq_dataset_id" not in config:
+        config["bq_dataset_id"] = bq_dataset_id
+    elif not config.get("bq_dataset_id") and bq_dataset_id:
+        config["bq_dataset_id"] = bq_dataset_id
+
     logger.info(f"Configuration:")
-    logger.info(f"  Project: {project_id}")
+    logger.info(f"  Discovery Engine Project: {project_id}")
+    logger.info(f"  BigQuery Project: {config.get('bq_project_id', bq_project_id or 'not set')}")
+    logger.info(f"  BigQuery Dataset: {config.get('bq_dataset_id', bq_dataset_id or 'not set')}")
     logger.info(f"  Location: {location}")
     logger.info(f"  Engine: {engine_id}")
-    logger.info(f"  Dataset: {dataset_id}")
     logger.info(f"  Config: {config.get('name', 'unknown')}")
 
     # Import deployer
     from iterative.deployer import SingleAgentDeployer
 
-    # Initialize deployer
+    # Initialize deployer (project_id is for Discovery Engine, dataset_id is fallback)
     deployer = SingleAgentDeployer(
-        project_id=project_id,
+        project_id=project_id,  # Discovery Engine project
         location=location,
         engine_id=engine_id,
-        dataset_id=dataset_id
+        dataset_id=bq_dataset_id  # Fallback for bq_dataset_id if not in config
     )
 
     # Deploy agent

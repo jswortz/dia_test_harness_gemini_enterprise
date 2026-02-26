@@ -243,8 +243,12 @@ class SingleAgentDeployer:
         Returns:
             agent_id: The deployed agent ID
         """
-        config_name = config.get("name", "baseline")
-        self.agent_display_name = f"Data Agent - {config_name}"
+        # Use display_name from config if present, otherwise construct from name
+        if config.get("display_name"):
+            self.agent_display_name = config["display_name"]
+        else:
+            config_name = config.get("name", "baseline")
+            self.agent_display_name = f"Data Agent - {config_name}"
 
         print(f"\nChecking for existing agent: {self.agent_display_name}")
 
@@ -314,8 +318,8 @@ class SingleAgentDeployer:
                     "tool_description": config.get("tool_description", "Use this agent to query BigQuery data.")
                 },
                 "data_science_agent_config": {
-                    "bq_project_id": self.project_id,
-                    "bq_dataset_id": self.dataset_id,
+                    "bq_project_id": config.get("bq_project_id", self.project_id),
+                    "bq_dataset_id": config.get("bq_dataset_id", self.dataset_id),
                     "nl_query_config": nl_query_config
                 }
             }
@@ -325,13 +329,15 @@ class SingleAgentDeployer:
         if config.get("icon_uri"):
             payload["icon"] = {"uri": config["icon_uri"]}
 
-        # NOTE: Table access control fields (allowedTables, blockedTables) are not supported by the API
-        # Commenting out to prevent API errors
-        # data_science_config = payload["managed_agent_definition"]["data_science_agent_config"]
-        # if config.get("allowed_tables"):
-        #     data_science_config["allowedTables"] = config["allowed_tables"]
-        # if config.get("blocked_tables"):
-        #     data_science_config["blockedTables"] = config["blocked_tables"]
+        # Add allowlistTables if present (same pattern as update_agent_config.py)
+        allowed_tables = config.get("allowed_tables")
+        if allowed_tables and isinstance(allowed_tables, list) and len(allowed_tables) > 0:
+            payload["managed_agent_definition"]["data_science_agent_config"]["allowlistTables"] = allowed_tables
+            print(f"  ✓ allowlistTables: {len(allowed_tables)} tables")
+        
+        # NOTE: blocked_tables is not supported by the API
+        if config.get("blocked_tables"):
+            print(f"  ⚠ blocked_tables: SKIPPED (not supported by API)")
 
         # Add authorization config if OAuth resource created
         if auth_resource:

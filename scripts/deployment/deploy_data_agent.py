@@ -76,10 +76,11 @@ def delete_agent(agent_name, headers):
         print(f"Failed to delete agent: {resp.status_code} - {resp.text}")
 
 def deploy_agents_from_config():
-    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")  # Discovery Engine project
     location = os.getenv("DIA_LOCATION", "global").lower()
     engine_id = os.getenv("DIA_ENGINE_ID")
-    bq_dataset_id = os.getenv("BQ_DATASET_ID")
+    bq_project_id = os.getenv("BQ_PROJECT_ID")  # BigQuery project
+    bq_dataset_id = os.getenv("BQ_DATASET_ID")  # BigQuery dataset
     
     if not all([project_id, location, engine_id, bq_dataset_id]):
         print(f"Missing required environment variables:")
@@ -88,8 +89,14 @@ def deploy_agents_from_config():
         print(f"  DIA_ENGINE_ID: {engine_id}")
         print(f"  BQ_DATASET_ID: {bq_dataset_id}")
         return
+    
+    # Use BQ_PROJECT_ID if set, otherwise fall back to GOOGLE_CLOUD_PROJECT
+    if not bq_project_id:
+        bq_project_id = project_id
+        print(f"⚠ Warning: BQ_PROJECT_ID not set, using GOOGLE_CLOUD_PROJECT ({project_id}) for BigQuery project")
 
-    print(f"Deploying Agents to Project: {project_id}, Location: {location}, Engine: {engine_id}")
+    print(f"Deploying Agents to Discovery Engine Project: {project_id}, Location: {location}, Engine: {engine_id}")
+    print(f"BigQuery Project: {bq_project_id}, Dataset: {bq_dataset_id}")
     
     headers = get_auth_headers(project_id)
     
@@ -108,8 +115,8 @@ def deploy_agents_from_config():
         config_name = config["name"]
         print(f"\nProcessing variant: {config_name}")
         
-        # Construct Display Name
-        target_agent_display_name = f"Data Agent - {config_name}"
+        # Construct Display Name - use display_name from config if present, otherwise construct from name
+        target_agent_display_name = config.get("display_name") or f"Data Agent - {config_name}"
         
         # 1. List Agents to check existence
         agents_url = f"{base_url}/agents"
@@ -136,7 +143,7 @@ def deploy_agents_from_config():
 
         # Prepare data_science_config
         data_science_config = {
-            "bq_project_id": project_id,
+            "bq_project_id": bq_project_id,  # Use BQ_PROJECT_ID, not GOOGLE_CLOUD_PROJECT
             "bq_dataset_id": bq_dataset_id,
             "nl_query_config": {}
         }

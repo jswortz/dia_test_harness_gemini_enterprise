@@ -13,9 +13,10 @@ Supported fields for update:
 - schema_description
 - nl2py_prompt
 - nl2sql_examples
+- allowlistTables (from 'allowed_tables' in config)
 
 Note: bq_project_id and bq_dataset_id are IMMUTABLE after agent creation and cannot be updated.
-Note: allowed_tables and blocked_tables are NOT supported by the API.
+Note: blocked_tables is NOT supported by the API.
 """
 
 import os
@@ -28,7 +29,6 @@ import google.auth.transport.requests
 from dotenv import load_dotenv
 from pathlib import Path
 from urllib.parse import quote
-import time
 
 # Load environment variables
 load_dotenv()
@@ -135,7 +135,8 @@ def build_update_payload(config: dict, only_fields: list = None) -> tuple[dict, 
         config: Configuration dictionary
         only_fields: If provided, only include these fields in the update.
                      Valid values: displayName, description, tool_description,
-                     nl2sql_prompt, schema_description, nl2py_prompt, nl2sql_examples
+                     nl2sql_prompt, schema_description, nl2py_prompt, nl2sql_examples,
+                     allowlistTables
     
     Returns:
         tuple: (payload dict, list of update mask fields)
@@ -146,6 +147,9 @@ def build_update_payload(config: dict, only_fields: list = None) -> tuple[dict, 
     # Helper to check if field should be included
     def should_include(field_name: str) -> bool:
         if only_fields is None:
+            # For immutable fields, only include if explicitly requested
+            if field_name in ["bqProjectId", "bqDatasetId"]:
+                return False
             return True
         return field_name in only_fields
     
@@ -249,76 +253,59 @@ def build_update_payload(config: dict, only_fields: list = None) -> tuple[dict, 
         managed_def["data_science_agent_config"]["nl_query_config"] = nl_query_config
         update_mask_fields.append("managedAgentDefinition.dataScienceAgentConfig.nlQueryConfig")
     
+    # 3c. Allowlist Tables (within data_science_agent_config)
+    if should_include("allowlistTables"):
+        allowed_tables = config.get("allowed_tables")
+        if allowed_tables and isinstance(allowed_tables, list) and len(allowed_tables) > 0:
+            if "data_science_agent_config" not in managed_def:
+                managed_def["data_science_agent_config"] = {}
+            managed_def["data_science_agent_config"]["allowlistTables"] = allowed_tables
+            update_mask_fields.append("managedAgentDefinition.dataScienceAgentConfig.allowlistTables")
+            print(f"  ✓ allowlistTables: {len(allowed_tables)} tables")
+        else:
+            print(f"  ⚠ allowlistTables: not set in config (or empty)")
+    else:
+        print(f"  ⏭ allowlistTables: SKIPPED (not in --only list)")
+    
+    # 3d. BQ Project ID (within data_science_agent_config) - Only if explicitly requested
+    if should_include("bqProjectId"):
+        bq_project_id = config.get("bq_project_id")
+        if bq_project_id:
+            if "data_science_agent_config" not in managed_def:
+                managed_def["data_science_agent_config"] = {}
+            managed_def["data_science_agent_config"]["bqProjectId"] = bq_project_id
+            update_mask_fields.append("managedAgentDefinition.dataScienceAgentConfig.bqProjectId")
+            print(f"  ✓ bqProjectId: {bq_project_id}")
+        else:
+            print(f"  ⚠ bqProjectId: not set in config")
+    else:
+        if only_fields is None and config.get("bq_project_id"):
+            print(f"  ⚠ bq_project_id: SKIPPED (immutable after creation - use --only bqProjectId to attempt update)")
+    
+    # 3e. BQ Dataset ID (within data_science_agent_config) - Only if explicitly requested
+    if should_include("bqDatasetId"):
+        bq_dataset_id = config.get("bq_dataset_id")
+        if bq_dataset_id:
+            if "data_science_agent_config" not in managed_def:
+                managed_def["data_science_agent_config"] = {}
+            managed_def["data_science_agent_config"]["bqDatasetId"] = bq_dataset_id
+            update_mask_fields.append("managedAgentDefinition.dataScienceAgentConfig.bqDatasetId")
+            print(f"  ✓ bqDatasetId: {bq_dataset_id}")
+        else:
+            print(f"  ⚠ bqDatasetId: not set in config")
+    else:
+        if only_fields is None and config.get("bq_dataset_id"):
+            print(f"  ⚠ bq_dataset_id: SKIPPED (immutable after creation - use --only bqDatasetId to attempt update)")
+    
     # Add managed_agent_definition to payload if any fields were set
     if managed_def:
         payload["managed_agent_definition"] = managed_def
-    
-    # Log fields that cannot be updated (only if not using --only or if explicitly requested)
-    if only_fields is None:
-        if config.get("bq_project_id"):
-            print(f"  ⚠ bq_project_id: SKIPPED (immutable after creation)")
-        if config.get("bq_dataset_id"):
-            print(f"  ⚠ bq_dataset_id: SKIPPED (immutable after creation)")
-        if config.get("allowed_tables"):
-            print(f"  ⚠ allowed_tables: SKIPPED (not supported by API)")
         if config.get("blocked_tables"):
             print(f"  ⚠ blocked_tables: SKIPPED (not supported by API)")
         if config.get("icon_uri"):
             print(f"  ⚠ icon_uri: SKIPPED (use separate update)")
     
     return payload, update_mask_fields
-
-
-def wait_for_lro(host: str, operation_name: str, headers: dict, timeout: int = 300) -> bool:
-    """Wait for a Long-Running Operation to complete."""
-    url = f"https://{host}/v1alpha/{operation_name}"
-    start_time = time.time()
-    
-    print(f"⏳ Waiting for operation to complete (timeout: {timeout}s)...")
-    
-    while time.time() - start_time < timeout:
-        resp = requests.get(url, headers=headers)
-        if resp.status_code != 200:
-            print(f"  ⚠ LRO check failed: {resp.status_code}")
-            time.sleep(5)
-            continue
-        
-        data = resp.json()
-        
-        if data.get("done", False):
-            if "error" in data:
-                print(f"❌ Operation failed: {data['error']}")
-                return False
-            print(f"✓ Operation completed successfully")
-            return True
-        
-        elapsed = int(time.time() - start_time)
-        print(f"  ⏳ Still waiting... ({elapsed}s)")
-        time.sleep(5)
-    
-    print(f"⚠ Operation timed out after {timeout}s")
-    return False
-
-
-def deploy_agent(host: str, agent_name: str, headers: dict) -> bool:
-    """Deploy the agent to apply configuration changes."""
-    deploy_url = f"https://{host}/v1alpha/{agent_name}:deploy"
-    
-    print(f"\n🚀 Deploying agent to apply changes...")
-    resp = requests.post(deploy_url, headers=headers, json={"name": agent_name})
-    
-    if resp.status_code == 200:
-        data = resp.json()
-        if "name" in data and "operations" in data["name"]:
-            return wait_for_lro(host, data["name"], headers)
-        print("✓ Agent deployed successfully")
-        return True
-    elif resp.status_code == 400 and "Invalid agent state for deploy: ENABLED" in resp.text:
-        print("✓ Agent already enabled")
-        return True
-    else:
-        print(f"⚠ Deploy warning: {resp.status_code} - {resp.text[:200]}")
-        return True  # Don't fail on deploy issues
 
 
 def update_agent(
@@ -351,9 +338,8 @@ def update_agent(
     # Check if LRO was returned
     data = resp.json()
     if "name" in data and "operations" in data["name"]:
-        print("  LRO returned, waiting for completion...")
-        if not wait_for_lro(host, data["name"], headers):
-            return False
+        print("  ⚠ LRO returned - operation may still be in progress")
+        print("  Note: Configuration update was submitted successfully")
     
     return True
 
@@ -379,7 +365,8 @@ Examples:
 
 Available fields for --only:
   displayName, description, tool_description, nl2sql_prompt, 
-  schema_description, nl2py_prompt, nl2sql_examples
+  schema_description, nl2py_prompt, nl2sql_examples, allowlistTables,
+  bqProjectId, bqDatasetId
 """
     )
     parser.add_argument(
@@ -398,7 +385,8 @@ Available fields for --only:
         nargs="+",
         choices=[
             "displayName", "description", "tool_description",
-            "nl2sql_prompt", "schema_description", "nl2py_prompt", "nl2sql_examples"
+            "nl2sql_prompt", "schema_description", "nl2py_prompt", "nl2sql_examples",
+            "allowlistTables", "bqProjectId", "bqDatasetId"
         ],
         help="Update ONLY these specific fields (space-separated list)"
     )
@@ -482,10 +470,6 @@ def main():
     if not update_agent(host, agent_name, payload, update_mask_fields, headers):
         print("\n❌ Update failed!")
         sys.exit(1)
-    
-    # 8. Deploy agent to apply changes
-    if not deploy_agent(host, agent_name, headers):
-        print("\n⚠ Deploy had issues, but update may have succeeded")
     
     print("\n" + "=" * 80)
     print("✅ Agent configuration updated successfully!")

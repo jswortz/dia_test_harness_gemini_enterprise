@@ -5,7 +5,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import google.auth
 from google.auth.transport.requests import Request
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple, Union
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -106,12 +106,17 @@ class AgentClient:
 
     @retry(
         retry=retry_if_exception_type(RetryableAPIError),
-        stop=stop_after_attempt(10),  # Increased from 5 to 10 for better reliability
-        wait=wait_exponential(multiplier=2, min=4, max=120),  # Increased max from 60s to 120s
+        stop=stop_after_attempt(5),  # Reduced from 10 to 5 to avoid long timeouts (outer loop also retries)
+        wait=wait_exponential(multiplier=2, min=4, max=60),  # Reduced max wait to 60s
         before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
         reraise=True
     )
-    def query_agent(self, text: str, session_id: Optional[str] = None, timeout: Optional[float] = None) -> list:
+    def query_agent(
+        self,
+        text: str,
+        session_id: Optional[str] = None,
+        timeout: Optional[Union[float, Tuple[float, float]]] = (10, 180),
+    ) -> list:
         """
         Queries the agent using streamAssist endpoint with automatic retry on transient failures.
 
@@ -121,7 +126,9 @@ class AgentClient:
         Args:
             text: The question/query text to send to the agent
             session_id: Optional session ID to use (creates new session if not provided)
-            timeout: Optional timeout in seconds for the request (default: None, no timeout)
+            timeout: Request timeout. Float = total seconds. Tuple = (connect, read).
+                Default (10, 180) prevents indefinite hangs while leaving generous
+                read budget for LLM generation. Pass None to disable.
 
         Returns:
             List of streaming message chunks as shown in API response structure.

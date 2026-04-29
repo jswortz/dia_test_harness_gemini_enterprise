@@ -24,7 +24,7 @@ class PromptImprover:
     - Diff visualization
     """
 
-    def __init__(self, project_id: str, location: str = "global", model_name: str = "gemini-3-pro-preview"):
+    def __init__(self, project_id: str, location: str = "global", model_name: str = "gemini-3-pro-preview", temperature: float = 1.0):
         """
         Initialize prompt improver.
 
@@ -32,10 +32,15 @@ class PromptImprover:
             project_id: Google Cloud project ID
             location: Location for Vertex AI (e.g., "global", "us-central1")
             model_name: Gemini model to use for analysis
+            temperature: Sampling temperature (0.0-2.0). Default 1.0 per OPRO research.
+                        - 0.0-0.5: Conservative, less diverse suggestions
+                        - 1.0: Balanced exploration-exploitation (OPRO optimal)
+                        - 1.5-2.0: Creative but potentially random
         """
         self.project_id = project_id
         self.location = location
         self.model_name = model_name
+        self.temperature = temperature
 
         # Initialize Vertex AI
         vertexai.init(project=project_id, location=location)
@@ -46,7 +51,8 @@ class PromptImprover:
         failures: List[Dict],
         current_prompt: str,
         successes: Optional[List[Dict]] = None,
-        previous_metrics: Optional[Dict] = None
+        previous_metrics: Optional[Dict] = None,
+        trajectory_history: Optional[List[Dict]] = None
     ) -> str:
         """
         Analyze failure patterns and suggest prompt improvements.
@@ -59,7 +65,8 @@ class PromptImprover:
             failures: List of failed test cases FROM TRAINING SET ONLY
             current_prompt: Current NL2SQL prompt text
             successes: Optional list of successful test cases FROM TRAINING SET ONLY
-            previous_metrics: Optional previous iteration metrics for trajectory analysis
+            previous_metrics: Optional previous iteration metrics (deprecated, use trajectory_history)
+            trajectory_history: Optional full trajectory history (OPRO-aligned approach)
 
         Returns:
             str: Suggested improved prompt
@@ -71,15 +78,29 @@ class PromptImprover:
         print(f"\n=== Analyzing {len(failures)} Failures ===")
         if successes:
             print(f"Including {len(successes)} successful cases for pattern insights")
-        if previous_metrics:
-            print(f"Including previous iteration metrics for trajectory analysis")
+        if trajectory_history:
+            print(f"Including full trajectory history ({len(trajectory_history)} iterations) for OPRO-aligned optimization")
+        elif previous_metrics:
+            print(f"Including previous iteration metrics for trajectory analysis (legacy mode)")
 
         # Build analysis prompt for LLM with trajectory context
-        analysis_prompt = self._build_analysis_prompt(failures, current_prompt, successes, previous_metrics)
+        analysis_prompt = self._build_analysis_prompt(failures, current_prompt, successes, previous_metrics, trajectory_history)
 
-        # Generate suggestions
-        print("Generating prompt improvement suggestions...")
-        response = self.model.generate_content(analysis_prompt)
+        # Generate suggestions with OPRO-aligned temperature
+        print(f"Generating prompt improvement suggestions (temperature={self.temperature})...")
+        from vertexai.generative_models import GenerationConfig
+
+        generation_config = GenerationConfig(
+            temperature=self.temperature,
+            top_p=1.0,
+            top_k=40,
+            max_output_tokens=8192
+        )
+
+        response = self.model.generate_content(
+            analysis_prompt,
+            generation_config=generation_config
+        )
         suggested_prompt = response.text.strip()
 
         # Extract just the prompt if LLM included explanation
@@ -249,7 +270,8 @@ class PromptImprover:
         failures: List[Dict],
         current_prompt: str,
         successes: Optional[List[Dict]] = None,
-        previous_metrics: Optional[Dict] = None
+        previous_metrics: Optional[Dict] = None,
+        trajectory_history: Optional[List[Dict]] = None
     ) -> str:
         """
         Build the prompt for LLM to analyze failures and suggest improvements.
@@ -258,14 +280,37 @@ class PromptImprover:
             failures: List of failed test cases
             current_prompt: Current NL2SQL prompt
             successes: Optional list of successful test cases
-            previous_metrics: Optional previous iteration metrics for trajectory analysis
+            previous_metrics: Optional previous iteration metrics (deprecated)
+            trajectory_history: Optional full trajectory history (OPRO-aligned)
 
         Returns:
             str: Analysis prompt for LLM
         """
-        # Build trajectory context section if previous metrics exist
+        # Build OPRO-aligned trajectory context section if trajectory_history exists
         trajectory_context = ""
-        if previous_metrics:
+        if trajectory_history and len(trajectory_history) > 0:
+            # OPRO approach: Show all past (prompt, score) pairs sorted ascending
+            trajectory_lines = ["**🎯 Optimization Trajectory (Past Prompts Sorted by Accuracy)**\n"]
+            trajectory_lines.append("The following prompts were tried in previous iterations, sorted from WORST to BEST performing:")
+            trajectory_lines.append("(Best prompts are at the END - learn from their patterns)\n")
+
+            for idx, item in enumerate(trajectory_history, 1):
+                preview = item.get("prompt_preview", "")
+                accuracy = item.get("accuracy", 0.0)
+                iteration = item.get("iteration", 0)
+
+                trajectory_lines.append(f"\n{idx}. **Iteration {iteration}** → Accuracy: {accuracy:.2f}%")
+                trajectory_lines.append(f"   Prompt preview: \"{preview}\"")
+
+            # Add goal statement
+            best_accuracy = trajectory_history[-1].get("accuracy", 0.0) if trajectory_history else 0.0
+            trajectory_lines.append(f"\n**Your Goal**: Generate a NEW prompt that achieves HIGHER accuracy than {best_accuracy:.2f}%.")
+            trajectory_lines.append("Analyze patterns in high-scoring prompts above and improve upon them.")
+            trajectory_lines.append("Focus on what makes the best-performing prompts effective.\n")
+
+            trajectory_context = "\n".join(trajectory_lines)
+
+        elif previous_metrics:
             # Extract accuracy from previous metrics (handle both dict and float formats)
             if isinstance(previous_metrics.get("accuracy"), dict):
                 prev_accuracy = previous_metrics["accuracy"].get("mean", 0.0)

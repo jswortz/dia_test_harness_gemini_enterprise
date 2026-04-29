@@ -1,24 +1,47 @@
 # Data Insights Agent (DIA) Optimization Harness
 
-Automated optimization tool for Google Cloud Data Insights Agents. Deploy an agent, authorize it once, then iteratively improve its natural language to SQL generation through AI-powered prompt refinement and **research-backed semantic equivalence evaluation**.
+> Automated, research-backed prompt-optimization loop for **Gemini Enterprise** Data Insights (NL2SQL) Agents. Deploy once, evaluate against a golden set, and let an LLM-as-judge + an LLM-as-optimizer (Google DeepMind's [**OPRO**](https://arxiv.org/pdf/2309.03409), Yang et al., 2024) iteratively rewrite the agent's prompts, schema descriptions, and few-shot examples until accuracy converges.
+
+![Optimization Workflow](dia-harness-stick-diagram.png)
+
+## Why this exists
+
+Shipping a production NL2SQL agent is the easy part. The hard part is the feedback loop:
+
+- Manual prompt-tuning over a 50–500-question golden set doesn't scale.
+- Exact-match SQL evaluation produces brutal false negatives (`IN` vs `OR`, `BETWEEN` vs `>= AND <=`, alias differences) and obscures real failure modes.
+- Without a reliable signal, you can't tell whether a prompt edit actually improved the agent or just shifted which questions it gets wrong.
+
+This harness closes that loop. It pairs a **flexible-rubric semantic-equivalence judge** (so partial correctness is recognized and graded) with an **OPRO-aligned LLM-as-optimizer** that conditions each new prompt on the full trajectory of past prompts and their accuracies — and produces a complete audit trail of configuration evolution + accuracy charts at every step.
+
+## Highlights
+
+- **End-to-end NL2SQL optimization for Gemini Enterprise.** One CLI: `deploy → authorize → optimize`. Each iteration evaluates, analyzes failures with Gemini, proposes config changes, applies them via PATCH (preserving OAuth), and re-evaluates.
+- **DeepMind OPRO ("Optimization by PROmpting") implementation.** From iteration 2 onward, the optimizer's meta-prompt includes the top-N past `(prompt, accuracy)` pairs sorted ascending — exploiting LLM recency bias so the model anchors on what's been working. Temperature is fixed at the OPRO-optimal `1.0` (paper reports +8% on GSM8K, +5–50% on BBH; full-trajectory context beats single-iteration by 15–20%). See [`OPRO_IMPLEMENTATION_SUMMARY.md`](OPRO_IMPLEMENTATION_SUMMARY.md).
+- **LLM-as-judge with a 100-point flexible rubric.** Six weighted dimensions (table selection, join logic, filter accuracy, aggregation, column selection, formatting) replace binary pass/fail and produce a continuous optimization signal.
+- **Schema-aware semantic equivalence with counterexamples.** Implements *Miniature & Mull*-style prompting: the judge searches for hypothetical database states where two queries would diverge, citing concrete counterexamples when they do.
+- **Multi-field iterative rewriting.** Failure-pattern analysis drives targeted edits across six configuration fields (`nl2sql_prompt`, `schema_description`, `nl2sql_examples`, `nl2py_prompt`, `allowed_tables`, `blocked_tables`) with priority-based recommendations.
+- **Statistical reliability.** N-repeat measurements per iteration, held-out test-set evaluation for overfitting detection, and three-way comparison charts (train vs test, iteration-to-iteration deltas).
+- **Audit trail by default.** Every run produces a timestamped trajectory JSON, JSONL eval results, six PNG charts, and an auto-generated markdown optimization report you can hand to a stakeholder.
 
 ## What This Does
 
 1. **Deploy** a Data Insights Agent to Google Cloud
-2. **Authorize** the agent (one-time OAuth setup)
-3. **Optimize** the agent's prompts automatically through iterative testing and AI-driven improvements
+2. **Authorize** the agent (one-time OAuth setup, or non-interactive via Workload Identity Federation)
+3. **Optimize** the agent's prompts automatically through iterative, OPRO-aligned testing and AI-driven improvements
 
 Each optimization iteration:
-- Tests the agent against your golden dataset
-- Analyzes failures using Gemini AI
+- Tests the agent against your golden dataset (with N-repeat measurements for variance)
+- Analyzes failures with Gemini and clusters them into actionable patterns
+- Conditions the AI optimizer on the full trajectory of past prompts and accuracies (OPRO)
 - Intelligently determines which configuration fields to improve:
   - **nl2sql_prompt**: Main SQL generation instructions
-  - **schema_description**: Database schema details
+  - **schema_description**: Database schema details (also fed to the semantic judge for grounding)
   - **nl2sql_examples**: Few-shot learning examples
   - **nl2py_prompt**: Python data processing instructions
   - **allowed_tables**: Table access whitelist
   - **blocked_tables**: Table access blacklist
-- Updates the agent with improved configuration
+- Updates the agent via PATCH (OAuth preserved)
 - Tracks all configuration changes and accuracy improvements over time
 
 ## 🎯 OPRO-Aligned Optimization (Research-Backed)

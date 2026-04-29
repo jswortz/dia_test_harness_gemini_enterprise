@@ -2,7 +2,43 @@
 
 > Automated, research-backed prompt-optimization loop for **Gemini Enterprise** Data Insights (NL2SQL) Agents. Deploy once, evaluate against a golden set, and let an LLM-as-judge + an LLM-as-optimizer (Google DeepMind's [**OPRO**](https://arxiv.org/pdf/2309.03409), Yang et al., 2024) iteratively rewrite the agent's prompts, schema descriptions, and few-shot examples until accuracy converges.
 
-![Optimization Workflow](dia-harness-stick-diagram.png)
+```mermaid
+flowchart LR
+    Golden[("Golden Set<br/>questions + expected SQL")]
+
+    subgraph GE["Gemini Enterprise"]
+        Agent["Data Insights Agent<br/>(NL2SQL)"]
+    end
+
+    subgraph EvalLayer["Evaluation"]
+        direction TB
+        Runner["Eval Runner<br/>N repeats"]
+        Judge["LLM-as-Judge · Gemini<br/>100-pt rubric<br/>semantic equivalence"]
+        Runner --> Judge
+    end
+
+    subgraph OPRO["OPRO Meta-Optimizer · Yang et al. 2024"]
+        direction TB
+        Tracker[("Trajectory<br/>prompt, accuracy")]
+        Improver["Prompt Improver · Gemini @ T=1.0<br/>top-N past prompts, ascending"]
+        Tracker --> Improver
+    end
+
+    Artifacts["Per-run artifacts<br/>trajectory.json · 6 charts · report.md"]
+
+    Golden --> Runner
+    Agent -->|streamAssist| Runner
+    Judge -->|accuracy| Tracker
+    Judge -->|failures| Improver
+    Improver -->|rewritten prompt /<br/>schema / examples| Patch["PATCH agent config<br/>OAuth preserved"]
+    Patch --> Agent
+    Judge -.-> Artifacts
+    Tracker -.-> Artifacts
+
+    style OPRO fill:#e3f2fd,stroke:#1976d2,color:#0d47a1
+    style EvalLayer fill:#fce4ec,stroke:#c2185b,color:#880e4f
+    style GE fill:#e8f5e9,stroke:#388e3c,color:#1b5e20
+```
 
 ## Why this exists
 
@@ -304,35 +340,53 @@ dia-harness optimize \
 
 ## Optimization Workflow
 
-![Optimization Workflow](dia-harness-stick-diagram.png)
+Each optimization run is a closed feedback loop. From iteration 2 onward the OPRO trajectory feedback (dashed arrow) kicks in — the prompt improver sees the full history of past `(prompt, accuracy)` pairs sorted ascending, exploiting LLM recency bias to anchor on what's been working.
 
-Each optimization run follows this process:
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User / CLI
+    participant O as Optimizer
+    participant T as Tracker
+    participant R as Eval Runner
+    participant A as DIA Agent<br/>(Gemini Enterprise)
+    participant J as LLM-as-Judge<br/>(Gemini)
+    participant I as Prompt Improver<br/>(OPRO meta-prompt)
+    participant D as Deployer
 
+    U->>O: dia-harness optimize ...
+    loop Each iteration (until max-iterations or 100% accuracy)
+        O->>R: evaluate(golden_set, N repeats)
+        R->>A: streamAssist queries
+        A-->>R: generated SQL + thoughts
+        R->>J: compare(generated, expected, schema)
+        J-->>R: 100-pt scores · counterexamples
+        R-->>O: aggregate accuracy + failures
+        O->>T: record(iteration, prompt, accuracy)
+        T-->>I: top-N (prompt, accuracy) sorted ascending
+        Note over T,I: OPRO trajectory feedback (iter ≥ 2)
+        O->>I: failures + current config
+        I-->>O: rewritten prompt / schema / examples
+        O->>D: PATCH agent (OAuth preserved)
+        D->>A: apply new config
+    end
+    O-->>U: trajectory.json · 6 PNG charts · OPTIMIZATION_REPORT.md
 ```
-┌─────────────────────────────────────────────────────┐
-│ ITERATION N                                         │
-├─────────────────────────────────────────────────────┤
-│ 1. Evaluate agent against golden set (3x repeats)  │
-│    → Questions: 20                                  │
-│    → Correct: 15/20 (75% accuracy)                  │
-│                                                     │
-│ 2. Analyze failures with Gemini AI                 │
-│    → 5 failures detected                            │
-│    → Pattern: Missing column selection guidance    │
-│                                                     │
-│ 3. Generate prompt improvements                    │
-│    → Suggested change: Add explicit column rules   │
-│    → Show side-by-side diff                         │
-│                                                     │
-│ 4. User approval (or auto-accept)                  │
-│    [a] Approve  [e] Edit  [s] Skip                 │
-│                                                     │
-│ 5. Update agent via PATCH                          │
-│    → New configuration deployed                     │
-│    → OAuth authorization preserved                  │
-└─────────────────────────────────────────────────────┘
-         ↓
-    Next Iteration (or stop at 100% accuracy)
+
+**Example runtime output for a single iteration:**
+
+```text
+Iteration 4 — accuracy 80.00% (16/20)
+  Repeats: 0.80, 0.85, 0.75
+  Failures: 4
+    └─ Pattern: missing JOIN condition on dim_market.region
+
+📊 OPRO Trajectory Context: Using top 3 prompts from history
+   Accuracy range: 45.20% → 75.00%
+
+Generating prompt improvement suggestions (temperature=1.0)...
+  Suggested change: add explicit star-schema join rules
+  [a]pprove  [e]dit  [s]kip
 ```
 
 ## SQL Semantic Equivalence Evaluation
